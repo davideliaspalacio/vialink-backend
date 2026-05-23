@@ -2,7 +2,17 @@
 
 Backend para Vialink — webapp de transporte público inteligente con IA conversacional y simulación de 500 usuarios virtuales.
 
+## 🚀 Producción
+
+- **API**: https://vialink-backend-production.up.railway.app/api/v1
+- **Swagger interactivo**: https://vialink-backend-production.up.railway.app/api/docs
+- **Health**: https://vialink-backend-production.up.railway.app/health
+- **WebSocket**: `wss://vialink-backend-production.up.railway.app/realtime`
+
+## 📚 Docs
+
 > **Para el contrato de API que consume el frontend** → ver [`docs/api-contract.md`](./docs/api-contract.md)
+> **Para la guía no-técnica del frontend (PDF)** → ver [`docs/Vialink-Frontend-Guide.pdf`](./docs/Vialink-Frontend-Guide.pdf)
 > **Para la arquitectura interna** → ver [`docs/architecture.md`](./docs/architecture.md)
 > **Para el plan 48h** → ver [`docs/roadmap.md`](./docs/roadmap.md)
 
@@ -137,14 +147,14 @@ prisma/
 ## Estado del proyecto
 
 - [x] **Bloque 0** · Setup (NestJS + Prisma + Supabase + Swagger + Health)
-- [ ] **Bloque 1** · Seed Barranquilla (landmarks + corridors)
-- [ ] **Bloque 2** · Discovery APIs (`buses-at-point`, landmarks, routes)
-- [ ] **Bloque 3** · Auth + perfil
-- [ ] **Bloque 4** · Trips + wait sessions + incidents
-- [ ] **Bloque 5** · Asistente Claude con tools
-- [ ] **Bloque 6** · Simulador 500 agentes
-- [ ] **Bloque 7** · WebSocket + admin
-- [ ] **Bloque 8** · Polish + deploy prod
+- [x] **Bloque 1** · Seed Barranquilla (80 landmarks + 14 rutas + Transmetro T1/T2 + 86 buses)
+- [x] **Bloque 2** · Discovery APIs (`buses-at-point`, landmarks, routes) + WebSocket + BusEngine
+- [x] **Bloque 3** · Auth + perfil + favoritos
+- [x] **Bloque 4** · Trips + wait sessions matcher + incidents
+- [x] **Bloque 5** · Asistente Claude Haiku 4.5 con function calling
+- [x] **Bloque 6** · Simulador 500 agentes (6 perfiles realistas)
+- [x] **Bloque 7** · Admin metrics + feed unificado
+- [x] **Bloque 8** · Deploy a Railway en producción
 - [ ] **Bloque 9** · Demo prep
 
 Ver [`docs/roadmap.md`](./docs/roadmap.md) para detalle de cada bloque.

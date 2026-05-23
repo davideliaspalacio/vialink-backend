@@ -28,7 +28,8 @@ Por eso el modelo central es:
 
 ## 1 · Convenciones generales
 
-- **Base URL**: `https://api.vialink.app/api/v1` (prod) · `http://localhost:3000/api/v1` (local)
+- **Base URL**: `https://vialink-backend-production.up.railway.app/api/v1` (prod) · `http://localhost:3000/api/v1` (local)
+- **Swagger interactivo (prod)**: https://vialink-backend-production.up.railway.app/api/docs
 - **Auth**: `Authorization: Bearer <jwt>` (Supabase JWT). Endpoints sin auth marcados con `🔓`.
 - **Formato fechas**: ISO 8601 UTC (`2026-05-23T14:30:00Z`)
 - **Coordenadas**: GeoJSON-style `{lat: number, lng: number}` (NO `[lng, lat]` salvo en respuestas GeoJSON crudas)
@@ -446,7 +447,7 @@ Cancelar.
 ### Conexión
 
 ```
-wss://api.vialink.app/realtime?token=<jwt>
+wss://vialink-backend-production.up.railway.app/realtime?token=<jwt>
 ```
 
 Cliente: `socket.io-client@4`. Sin token funciona también (suscripción anónima a rooms públicos).
