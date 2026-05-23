@@ -1,0 +1,417 @@
+// ============================================
+// Vialink — Prisma schema
+// PostgreSQL + PostGIS on Supabase
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// NOTA: las extensiones (postgis, pg_trgm, uuid-ossp, pgcrypto, etc.) se manejan
+// fuera de Prisma porque Supabase incluye varias por defecto (supabase_vault,
+// pg_stat_statements, pgcrypto) y declararlas aquí causa drift constante.
+// Las que necesitamos están habilitadas vía SQL inicial (ver scripts/init-db.sql).
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ========== CORE GEO ==========
+
+model City {
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique // 'BAQ'
+  name      String
+  center    Unsupported("geography(Point, 4326)")
+  bbox      Unsupported("geography(Polygon, 4326)")?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  routes    Route[]
+  landmarks Landmark[]
+  profiles  Profile[]
+
+  @@map("cities")
+}
+
+// ========== USERS ==========
+
+model Profile {
+  id        String   @id @db.Uuid // matches auth.users.id from Supabase
+  email     String   @unique
+  name      String?
+  deviceId  String?  @map("device_id")
+  cityId    String   @map("city_id") @db.Uuid
+  city      City     @relation(fields: [cityId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  trips        Trip[]
+  favorites    Favorite[]
+  waitSessions WaitSession[]
+  ratings      Rating[]
+  incidents    Incident[]
+  messages     AssistantMessage[]
+
+  @@map("profiles")
+}
+
+// ========== ROUTES & CORRIDORS ==========
+
+enum RouteMode {
+  TRADITIONAL
+  BRT
+  METRO
+
+  @@map("route_mode")
+}
+
+model Route {
+  id            String    @id @default(uuid()) @db.Uuid
+  code          String
+  name          String
+  color         String    @default("#1E5EFF")
+  mode          RouteMode @default(TRADITIONAL)
+  stopsAreFixed Boolean   @default(false) @map("stops_are_fixed")
+  operator      String?
+  cityId        String    @map("city_id") @db.Uuid
+  city          City      @relation(fields: [cityId], references: [id])
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  corridor   RouteCorridor?
+  buses      Bus[]
+  trips      Trip[]
+  landmarks  RouteLandmark[]
+  fixedStops FixedStop[]
+  incidents  Incident[]
+
+  @@unique([cityId, code])
+  @@index([cityId, mode])
+  @@map("routes")
+}
+
+model RouteCorridor {
+  routeId   String                                @id @map("route_id") @db.Uuid
+  route     Route                                 @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  path      Unsupported("geography(LineString, 4326)")
+  lengthM   Int                                   @map("length_m")
+  direction String                                @default("OUTBOUND")
+
+  @@map("route_corridors")
+}
+
+// ========== LANDMARKS ==========
+
+enum LandmarkType {
+  UNIVERSITY
+  MALL
+  HOSPITAL
+  SQUARE
+  TRANSPORT_HUB
+  NEIGHBORHOOD
+  LANDMARK
+
+  @@map("landmark_type")
+}
+
+model Landmark {
+  id        String       @id @default(uuid()) @db.Uuid
+  name      String
+  type      LandmarkType
+  address   String?
+  location  Unsupported("geography(Point, 4326)")
+  cityId    String       @map("city_id") @db.Uuid
+  city      City         @relation(fields: [cityId], references: [id])
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  routes    RouteLandmark[]
+  favorites Favorite[]
+
+  @@index([cityId])
+  @@map("landmarks")
+}
+
+model RouteLandmark {
+  routeId             String   @map("route_id") @db.Uuid
+  landmarkId          String   @map("landmark_id") @db.Uuid
+  distanceToCorridorM Int      @map("distance_to_corridor_m")
+  fractionOfCorridor  Float    @map("fraction_of_corridor") // 0.0-1.0
+
+  route    Route    @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  landmark Landmark @relation(fields: [landmarkId], references: [id], onDelete: Cascade)
+
+  @@id([routeId, landmarkId])
+  @@index([routeId, fractionOfCorridor])
+  @@map("route_landmarks")
+}
+
+// Fixed stops only apply to BRT/METRO routes (e.g., Transmetro)
+model FixedStop {
+  id                 String   @id @default(uuid()) @db.Uuid
+  routeId            String   @map("route_id") @db.Uuid
+  route              Route    @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  name               String
+  code               String?
+  sequence           Int
+  location           Unsupported("geography(Point, 4326)")
+  fractionOfCorridor Float    @map("fraction_of_corridor")
+
+  @@unique([routeId, sequence])
+  @@map("fixed_stops")
+}
+
+// ========== BUSES ==========
+
+enum BusStatus {
+  IN_SERVICE
+  OUT_OF_SERVICE
+  BREAK
+
+  @@map("bus_status")
+}
+
+model Bus {
+  id                 String                                @id @default(uuid()) @db.Uuid
+  routeId            String                                @map("route_id") @db.Uuid
+  route              Route                                 @relation(fields: [routeId], references: [id])
+  plate              String                                @unique
+  currentLocation    Unsupported("geography(Point, 4326)") @map("current_location")
+  fractionOfCorridor Float                                 @default(0) @map("fraction_of_corridor")
+  speedKmh           Float                                 @default(0) @map("speed_kmh")
+  heading            Float?
+  lastSeenAt         DateTime                              @default(now()) @map("last_seen_at")
+  status             BusStatus                             @default(IN_SERVICE)
+
+  trips     Trip[]
+  positions BusPosition[]
+
+  @@index([routeId, status])
+  @@map("buses")
+}
+
+model BusPosition {
+  id                 String                                @id @default(uuid()) @db.Uuid
+  busId              String                                @map("bus_id") @db.Uuid
+  bus                Bus                                   @relation(fields: [busId], references: [id], onDelete: Cascade)
+  location           Unsupported("geography(Point, 4326)")
+  fractionOfCorridor Float                                 @map("fraction_of_corridor")
+  speedKmh           Float                                 @map("speed_kmh")
+  recordedAt         DateTime                              @default(now()) @map("recorded_at")
+
+  @@index([busId, recordedAt])
+  @@map("bus_positions")
+}
+
+// ========== TRIPS ==========
+
+enum TripStatus {
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+
+  @@map("trip_status")
+}
+
+model Trip {
+  id                  String                                @id @default(uuid()) @db.Uuid
+  userId              String                                @map("user_id") @db.Uuid
+  user                Profile                               @relation(fields: [userId], references: [id])
+  routeId             String                                @map("route_id") @db.Uuid
+  route               Route                                 @relation(fields: [routeId], references: [id])
+  busId               String?                               @map("bus_id") @db.Uuid
+  bus                 Bus?                                  @relation(fields: [busId], references: [id])
+  boardingLocation    Unsupported("geography(Point, 4326)") @map("boarding_location")
+  dropoffLocation     Unsupported("geography(Point, 4326)") @map("dropoff_location")
+  boardingLandmarkId  String?                               @map("boarding_landmark_id") @db.Uuid
+  dropoffLandmarkId   String?                               @map("dropoff_landmark_id") @db.Uuid
+  startedAt           DateTime                              @default(now()) @map("started_at")
+  endedAt             DateTime?                             @map("ended_at")
+  estimatedArrivalAt  DateTime?                             @map("estimated_arrival_at")
+  status              TripStatus                            @default(IN_PROGRESS)
+
+  rating Rating?
+
+  @@index([userId, status])
+  @@map("trips")
+}
+
+// ========== WAIT SESSIONS (pin de espera) ==========
+
+enum WaitStatus {
+  WAITING
+  ALERTED
+  BOARDED
+  CANCELLED
+  EXPIRED
+
+  @@map("wait_status")
+}
+
+model WaitSession {
+  id                  String                                @id @default(uuid()) @db.Uuid
+  userId              String                                @map("user_id") @db.Uuid
+  user                Profile                               @relation(fields: [userId], references: [id])
+  routeId             String?                               @map("route_id") @db.Uuid
+  waitLocation        Unsupported("geography(Point, 4326)") @map("wait_location")
+  notifySecondsBefore Int                                   @default(180) @map("notify_seconds_before")
+  status              WaitStatus                            @default(WAITING)
+  startedAt           DateTime                              @default(now()) @map("started_at")
+  endedAt             DateTime?                             @map("ended_at")
+  alertedBusId        String?                               @map("alerted_bus_id") @db.Uuid
+
+  @@index([status, startedAt])
+  @@map("wait_sessions")
+}
+
+// ========== INCIDENTS ==========
+
+enum IncidentType {
+  TRAFFIC
+  FULL_BUS
+  NO_BUS_PASSING
+  ACCIDENT
+
+  @@map("incident_type")
+}
+
+model Incident {
+  id          String                                @id @default(uuid()) @db.Uuid
+  userId      String?                               @map("user_id") @db.Uuid
+  user        Profile?                              @relation(fields: [userId], references: [id])
+  routeId     String?                               @map("route_id") @db.Uuid
+  route       Route?                                @relation(fields: [routeId], references: [id])
+  type        IncidentType
+  location    Unsupported("geography(Point, 4326)")
+  description String?
+  reportedAt  DateTime                              @default(now()) @map("reported_at")
+
+  @@index([reportedAt])
+  @@map("incidents")
+}
+
+// ========== RATINGS ==========
+
+model Rating {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  user      Profile  @relation(fields: [userId], references: [id])
+  tripId    String   @unique @map("trip_id") @db.Uuid
+  trip      Trip     @relation(fields: [tripId], references: [id])
+  stars     Int      // 1-5
+  comment   String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("ratings")
+}
+
+// ========== FAVORITES ==========
+
+enum FavoriteTarget {
+  LANDMARK
+  ROUTE
+
+  @@map("favorite_target")
+}
+
+model Favorite {
+  id         String         @id @default(uuid()) @db.Uuid
+  userId     String         @map("user_id") @db.Uuid
+  user       Profile        @relation(fields: [userId], references: [id])
+  targetType FavoriteTarget @map("target_type")
+  landmarkId String?        @map("landmark_id") @db.Uuid
+  landmark   Landmark?      @relation(fields: [landmarkId], references: [id])
+  routeId    String?        @map("route_id") @db.Uuid
+  alias      String?
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  @@unique([userId, targetType, landmarkId, routeId])
+  @@map("favorites")
+}
+
+// ========== ASSISTANT (Claude) ==========
+
+model AssistantMessage {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  user            Profile  @relation(fields: [userId], references: [id])
+  question        String
+  answer          String
+  suggestedAction Json?    @map("suggested_action")
+  latencyMs       Int?     @map("latency_ms")
+  toolCalls       Json?    @map("tool_calls")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@map("assistant_messages")
+}
+
+// ========== SIMULATOR ==========
+
+enum AgentProfile {
+  STUDENT_UNINORTE
+  STREET_VENDOR
+  EXECUTIVE_NORTE
+  HOUSEWIFE_SURORIENTE
+  TOURIST
+  NIGHTLIFE_ATTENDEE
+
+  @@map("agent_profile")
+}
+
+enum AgentStatus {
+  IDLE
+  WALKING
+  WAITING_BUS
+  ON_BUS
+  AT_DESTINATION
+
+  @@map("agent_status")
+}
+
+model SimulatorAgent {
+  id              String                                @id @default(uuid()) @db.Uuid
+  profileType     AgentProfile                          @map("profile_type")
+  name            String
+  homeLocation    Unsupported("geography(Point, 4326)") @map("home_location")
+  workLocation    Unsupported("geography(Point, 4326)")? @map("work_location")
+  schedule        Json
+  status          AgentStatus                           @default(IDLE)
+  currentLocation Unsupported("geography(Point, 4326)")? @map("current_location")
+  currentRouteId  String?                               @map("current_route_id") @db.Uuid
+  currentTripId   String?                               @map("current_trip_id") @db.Uuid
+  createdAt       DateTime                              @default(now()) @map("created_at")
+
+  events SimulatorEvent[]
+
+  @@index([profileType, status])
+  @@map("simulator_agents")
+}
+
+model SimulatorEvent {
+  id         String                                @id @default(uuid()) @db.Uuid
+  agentId    String                                @map("agent_id") @db.Uuid
+  agent      SimulatorAgent                        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  actionType String                                @map("action_type")
+  payload    Json
+  location   Unsupported("geography(Point, 4326)")?
+  occurredAt DateTime                              @default(now()) @map("occurred_at")
+
+  @@index([occurredAt])
+  @@index([agentId, occurredAt])
+  @@map("simulator_events")
+}
+
+// Cache of walking paths (pre-computed with Mapbox/ORS)
+model CachedWalkingPath {
+  id          String                                    @id @default(uuid()) @db.Uuid
+  fromGeohash String                                    @map("from_geohash") // geohash precision 7 (~150m)
+  toGeohash   String                                    @map("to_geohash")
+  path        Unsupported("geography(LineString, 4326)")
+  distanceM   Int                                       @map("distance_m")
+  durationS   Int                                       @map("duration_s")
+  computedAt  DateTime                                  @default(now()) @map("computed_at")
+
+  @@unique([fromGeohash, toGeohash])
+  @@index([fromGeohash])
+  @@map("cached_walking_paths")
+}
