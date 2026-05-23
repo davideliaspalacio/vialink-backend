@@ -7,6 +7,7 @@ import { AssistantService } from './assistant.service';
 import { AssistantToolsService } from './tools/assistant-tools.service';
 
 @Module({
+  // GeocodingModule es @Global() así que GeocodingService está disponible sin import explícito
   imports: [LandmarksModule, RoutesModule, DiscoveryModule],
   controllers: [AssistantController],
   providers: [AssistantService, AssistantToolsService],

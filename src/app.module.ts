@@ -12,6 +12,7 @@ import { BusesModule } from './buses/buses.module';
 import { CitiesModule } from './cities/cities.module';
 import { validateEnv } from './config/configuration';
 import { DiscoveryModule } from './discovery/discovery.module';
+import { GeocodingModule } from './geocoding/geocoding.module';
 import { HealthModule } from './health/health.module';
 import { IncidentsModule } from './incidents/incidents.module';
 import { LandmarksModule } from './landmarks/landmarks.module';
@@ -64,6 +65,7 @@ import { WaitSessionsModule } from './wait-sessions/wait-sessions.module';
     // ===== Core domain modules (Bloque 2) =====
     CitiesModule, // multi-city resolver
     RealtimeModule, // WS gateway + event bus (global)
+    GeocodingModule, // Nominatim geocoding (global) — usado por discovery, assistant tools
     LandmarksModule,
     RoutesModule,
     BusesModule, // includes BusEngine (moves buses every tick)

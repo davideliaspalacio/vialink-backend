@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { LatLng } from '../../common/types/geo';
 import { DiscoveryService } from '../../discovery/discovery.service';
+import { GeocodingService } from '../../geocoding/geocoding.service';
 import { LandmarksService } from '../../landmarks/landmarks.service';
 import { RoutesService } from '../../routes/routes.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -19,6 +20,7 @@ export class AssistantToolsService {
     private readonly landmarks: LandmarksService,
     private readonly routes: RoutesService,
     private readonly discovery: DiscoveryService,
+    private readonly geocoding: GeocodingService,
     private readonly prisma: PrismaService,
   ) {}
 
@@ -171,6 +173,23 @@ export class AssistantToolsService {
     };
   }
 
+  async geocode_address(input: { address: string }) {
+    try {
+      const r = await this.geocoding.geocodeToPoint(input.address);
+      return {
+        found: true,
+        formatted_address: r.formatted_address,
+        lat: r.location.lat,
+        lng: r.location.lng,
+      };
+    } catch (err) {
+      return {
+        found: false,
+        error: (err as Error).message ?? 'No se encontró la dirección',
+      };
+    }
+  }
+
   /**
    * Dispatcher: receives tool name + input, returns result.
    * Throws if tool name unknown.
@@ -202,6 +221,9 @@ export class AssistantToolsService {
               to_lng: number;
             },
           );
+          break;
+        case 'geocode_address':
+          result = await this.geocode_address(input as { address: string });
           break;
         default:
           throw new Error(`Unknown tool: ${toolName}`);

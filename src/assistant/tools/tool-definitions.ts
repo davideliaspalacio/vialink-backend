@@ -81,6 +81,21 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
       required: ['from_lat', 'from_lng', 'to_lat', 'to_lng'],
     },
   },
+  {
+    name: 'geocode_address',
+    description:
+      'Convierte una direccion libre (ej. "Calle 84 con Cra 50", "Diagonal 23 #45-67", "Estadio Metropolitano") a coordenadas geograficas. Usa esta tool cuando el usuario menciona una direccion postal, esquina, o referencia que NO sea uno de los landmarks conocidos. Si el usuario menciona un nombre de lugar famoso (Uninorte, Olimpica, Centro), prefiere find_landmark primero.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        address: {
+          type: 'string',
+          description: 'Direccion en texto libre, en espanol. Se asume Barranquilla, Colombia.',
+        },
+      },
+      required: ['address'],
+    },
+  },
 ];
 
 export type ToolName = (typeof ASSISTANT_TOOLS)[number]['name'];
