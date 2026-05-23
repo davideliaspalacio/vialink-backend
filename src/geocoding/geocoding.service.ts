@@ -199,16 +199,24 @@ export class GeocodingService {
     proximity: LatLng | undefined,
     limit: number,
   ): Promise<GeocodeResult[]> {
+    // Mapbox v6 doesn't understand Colombian "con": "Calle 84 con Cra 50".
+    // Normalize to the postal format it accepts: "Calle 84 50, Barranquilla".
+    const normalized = this.normalizeColombianAddress(query);
+
     const params = new URLSearchParams({
-      q: query,
+      q: normalized,
       limit: String(Math.min(limit, 10)),
       country: 'co',
       language: 'es',
-      types: 'address,street,place,locality,neighborhood,poi',
-      bbox: `${BAQ_BBOX.minLng},${BAQ_BBOX.minLat},${BAQ_BBOX.maxLng},${BAQ_BBOX.maxLat}`,
+      // Mapbox v6 valid types (per error msg): country, region, place, district,
+      // locality, postcode, neighborhood, address.
+      // We exclude country/region/postcode/district to keep results local.
+      types: 'address,place,locality,neighborhood',
       access_token: this.accessToken!,
     });
     if (proximity) {
+      // proximity biases results but doesn't restrict them — better than bbox
+      // which returns empty for valid out-of-zone addresses
       params.set('proximity', `${proximity.lng},${proximity.lat}`);
     }
 
@@ -268,6 +276,48 @@ export class GeocodingService {
 
   private normalize(q: string): string {
     return q.trim().replace(/\s+/g, ' ');
+  }
+
+  /**
+   * Mapbox no entiende el formato típico colombiano "Calle X con Cra Y".
+   * Esta función normaliza a algo que Mapbox sí indexó:
+   *   "Calle 84 con Cra 50"  →  "Calle 84 50, Barranquilla"
+   *   "Cra 46 con Calle 53"  →  "Carrera 46 53, Barranquilla"
+   *   "Diagonal 23 #45-67"   →  "Diagonal 23 45-67, Barranquilla"
+   *   "Plaza San Nicolás"    →  "Plaza San Nicolás, Barranquilla"
+   *
+   * Si el usuario ya incluyó "Barranquilla" o cualquier mención de ciudad,
+   * no la duplica.
+   */
+  private normalizeColombianAddress(q: string): string {
+    let out = q.trim();
+
+    // 1) Reemplazar abreviaturas comunes
+    out = out
+      .replace(/\bCra\.?\b/gi, 'Carrera')
+      .replace(/\bKra\.?\b/gi, 'Carrera')
+      .replace(/\bCl\.?\b/gi, 'Calle')
+      .replace(/\bAv\.?\b/gi, 'Avenida')
+      .replace(/\bDg\.?\b/gi, 'Diagonal')
+      .replace(/\bTv\.?\b/gi, 'Transversal');
+
+    // 2) Reemplazar el conector colombiano "con" entre números/calles por espacio
+    //    "Calle 84 con Carrera 50"  →  "Calle 84 Carrera 50"
+    out = out.replace(/(\d|\bCalle|\bCarrera|\bAvenida|\bDiagonal|\bTransversal)\s+con\s+/gi, '$1 ');
+
+    // 3) Limpiar el símbolo # en direcciones "Cra 46 #53-12" → "Cra 46 53-12"
+    out = out.replace(/\s*#\s*/g, ' ');
+
+    // 4) Colapsar espacios múltiples
+    out = out.replace(/\s+/g, ' ').trim();
+
+    // 5) Agregar ", Barranquilla" si no menciona ya alguna ciudad/municipio
+    const mentionsCity = /\b(Barranquilla|Soledad|Galapa|Puerto Colombia|Sabanilla|Malambo)\b/i.test(out);
+    if (!mentionsCity) {
+      out = `${out}, Barranquilla`;
+    }
+
+    return out;
   }
 
   private cacheKey(query: string, proximity?: LatLng, limit?: number): string {
