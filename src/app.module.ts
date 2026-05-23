@@ -18,6 +18,7 @@ import { LandmarksModule } from './landmarks/landmarks.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { RoutesModule } from './routes/routes.module';
+import { SimulatorModule } from './simulator/simulator.module';
 import { TripsModule } from './trips/trips.module';
 import { UsersModule } from './users/users.module';
 import { WaitSessionsModule } from './wait-sessions/wait-sessions.module';
@@ -83,9 +84,11 @@ import { WaitSessionsModule } from './wait-sessions/wait-sessions.module';
     // ===== Admin metrics + feed (Bloque 7) =====
     AdminModule, // GET /admin/metrics, /admin/feed + MetricsService scheduled 2s
 
+    // ===== Simulador 500 agentes (Bloque 6) =====
+    SimulatorModule, // POST /admin/simulator/start, /stop, /reset, GET /status
+
     // ===== Misc =====
     HealthModule,
-    // TODO Bloque 6: SimulatorModule (los 500 agentes)
   ],
   providers: [
     {

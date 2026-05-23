@@ -43,6 +43,12 @@ const envSchema = z.object({
   SIMULATOR_LLM_PROBABILITY: z.coerce.number().min(0).max(1).default(0.1),
   SIMULATOR_TICK_MS: z.coerce.number().int().positive().default(1000),
   SIMULATOR_BUS_TICK_MS: z.coerce.number().int().positive().default(3000),
+  /**
+   * Time-acceleration factor for the simulator. 1.0 = real time
+   * (a walk of 800m takes 10 minutes). For the pitch use 10-20x so
+   * agents visibly cycle through walk→wait→board→arrive in <1 minute.
+   */
+  SIMULATOR_SPEED_MULTIPLIER: z.coerce.number().positive().default(10),
 
   // Throttling
   THROTTLE_TTL_MS: z.coerce.number().int().positive().default(60_000),
