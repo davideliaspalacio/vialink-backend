@@ -192,13 +192,33 @@ export class RoutingService {
       };
     }
 
-    // Step 3: rank por rankScore (totalSec + penalty al wait), dedup por
-    // route_id, tomar top N. El user ve total_minutes "honesto" en cada
-    // recomendación pero el orden refleja el costo psicológico real.
+    // Step 3: ranking dual.
+    //
+    //   PRIMARY (rank 1):     mejor rankScore (total con wait penalty)
+    //                         = "el mejor viaje overall"
+    //   ALTERNATIVAS (2+):    ordenadas por walk_to_board_m ASC
+    //                         = "las rutas que pasan más cerca de VOS"
+    //
+    // Esto refleja el pedido del user: las alternativas mostradas deben
+    // ser las que pasan más cerca de ÉL, no las próximas mejores en
+    // tiempo total. El user quiere ver visualmente "todos estos buses
+    // pasan cerquita, cualquiera me sirve".
     enriched.sort((a, b) => a.rankScore - b.rankScore);
+    const primary = enriched[0];
+    const rest = enriched.slice(1);
+    // Re-sort el resto por proximidad al user (walk_to_board ASC).
+    rest.sort(
+      (a, b) =>
+        a.candidate.walk_to_board_m - b.candidate.walk_to_board_m,
+    );
+
     const seenRoutes = new Set<string>();
     const top: typeof enriched = [];
-    for (const e of enriched) {
+    if (primary) {
+      top.push(primary);
+      seenRoutes.add(primary.candidate.route_id);
+    }
+    for (const e of rest) {
       if (seenRoutes.has(e.candidate.route_id)) continue;
       seenRoutes.add(e.candidate.route_id);
       top.push(e);
