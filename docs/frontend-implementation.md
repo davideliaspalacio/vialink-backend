@@ -3177,6 +3177,564 @@ con `useLandmarkSearch` (los 80 nuestros). Si los dos devuelven, fusiona
 los resultados en una sola lista priorizando los landmarks (son más
 relevantes para Vialink).
 
+---
+
+## 13. Click en bus → modal con info + ruta + ETA
+
+Cuando el usuario tap en un `BusMarker` del mapa, abrimos un sheet/modal
+con la información completa del bus + dibujamos el polyline de su ruta
+en el mapa + mostramos ETA al usuario si tiene ubicación, sino al próximo
+landmark.
+
+### 13.1 Contrato del endpoint
+
+```
+GET /api/v1/buses/:id/details?lat=<float>&lng=<float>
+```
+
+| Param | Tipo | Required | Notas |
+|---|---|---|---|
+| `:id` | UUID (path) | ✅ | ID del bus |
+| `lat`, `lng` | float (query) | ❌ | Ubicación del usuario; si presentes, agrega `eta_to_user` |
+
+Endpoint **público** (no requiere Bearer).
+**Cache:** 1s TTL en backend, key = `busId:lat:lng`. Absorbe re-clicks rápidos.
+
+**Response 200:**
+```ts
+{
+  bus: {
+    id: string,
+    plate: string,
+    location: { lat: number, lng: number },
+    heading: number | null,
+    speed_kmh: number,
+    fraction_of_corridor: number,    // 0.0 - 1.0
+    status: 'IN_SERVICE',
+    last_seen_at: string,            // ISO
+  },
+  route: {
+    id: string,
+    code: string,                    // "C12"
+    name: string,                    // "Centro - Uninorte"
+    color: string,                   // "#1E5EFF"
+    mode: 'TRADITIONAL' | 'BRT' | 'METRO',
+    operator: string | null,         // "Coochofal"
+    length_km: number,               // 17.65
+  },
+  polyline: {
+    type: 'Feature',
+    geometry: {
+      type: 'LineString',
+      coordinates: [number, number][]  // [lng, lat][], GeoJSON estándar
+    },
+    properties: { route_id: string, code: string, color: string }
+  },
+  next_landmark: {                   // null si bus está cerca del final
+    id: string,
+    name: string,                    // "Universidad del Norte"
+    type: string,                    // "UNIVERSITY"
+    location: { lat: number, lng: number },
+    eta_seconds: number | null,      // null si bus está detenido
+    distance_m: number,
+  } | null,
+  eta_to_user: {                     // null si no se pasó lat/lng o el bus ya pasó
+    eta_seconds: number | null,
+    distance_m: number,
+    nearest_corridor_point: { lat: number, lng: number },
+  } | null,
+  stats: {
+    completed_km: number,
+    completed_pct: number,           // 0.0 - 1.0
+    remaining_km: number,
+  }
+}
+```
+
+**Errores:**
+| Status | Cuándo | Frontend qué hace |
+|---|---|---|
+| `400` | UUID inválido | Toast genérico |
+| `404` | Bus no existe en DB | Cerrar modal, toast "Bus no disponible" |
+| `410` | Bus completó recorrido / OUT_OF_SERVICE | Mostrar "Bus completó su recorrido" en el modal + deshabilitar CTAs |
+
+### 13.2 Tipo backend en `src/types/backend.ts`
+
+```ts
+export interface BackendBusDetailsResponse {
+  bus: {
+    id: string;
+    plate: string;
+    location: { lat: number; lng: number };
+    heading: number | null;
+    speed_kmh: number;
+    fraction_of_corridor: number;
+    status: 'IN_SERVICE' | 'OUT_OF_SERVICE' | 'BREAK';
+    last_seen_at: string;
+  };
+  route: {
+    id: string;
+    code: string;
+    name: string;
+    color: string;
+    mode: BackendRouteMode;
+    operator: string | null;
+    length_km: number;
+  };
+  polyline: BackendCorridorGeoJSON;
+  next_landmark: {
+    id: string;
+    name: string;
+    type: string;
+    location: { lat: number; lng: number };
+    eta_seconds: number | null;
+    distance_m: number;
+  } | null;
+  eta_to_user: {
+    eta_seconds: number | null;
+    distance_m: number;
+    nearest_corridor_point: { lat: number; lng: number };
+  } | null;
+  stats: {
+    completed_km: number;
+    completed_pct: number;
+    remaining_km: number;
+  };
+}
+```
+
+### 13.3 Tipo producto en `src/types/index.ts`
+
+```ts
+export type BusDetails = {
+  bus: {
+    id: string;
+    plate: string;
+    location: LatLng;
+    heading: number | null;
+    speedKmh: number;
+    fractionOfCorridor: number;
+    status: 'IN_SERVICE' | 'OUT_OF_SERVICE' | 'BREAK';
+    lastSeenAt: string;
+  };
+  route: {
+    id: string;
+    code: string;
+    name: string;
+    color: string;
+    mode: string;
+    operator: string | null;
+    lengthKm: number;
+  };
+  /** Coordinates ya en orden [lat, lng] (Leaflet). Backend devuelve GeoJSON [lng, lat]. */
+  polylineLatLng: [number, number][];
+  nextLandmark: {
+    id: string;
+    name: string;
+    type: string;
+    location: LatLng;
+    etaSeconds: number | null;
+    distanceM: number;
+  } | null;
+  etaToUser: {
+    etaSeconds: number | null;
+    distanceM: number;
+    nearestCorridorPoint: LatLng;
+  } | null;
+  stats: {
+    completedKm: number;
+    completedPct: number;
+    remainingKm: number;
+  };
+};
+```
+
+### 13.4 Mapper en `src/lib/mappers.ts`
+
+```ts
+import type { BackendBusDetailsResponse } from '../types/backend';
+import type { BusDetails } from '../types';
+
+export function backendBusDetailsToBusDetails(
+  r: BackendBusDetailsResponse,
+): BusDetails {
+  return {
+    bus: {
+      id: r.bus.id,
+      plate: r.bus.plate,
+      location: r.bus.location,
+      heading: r.bus.heading,
+      speedKmh: r.bus.speed_kmh,
+      fractionOfCorridor: r.bus.fraction_of_corridor,
+      status: r.bus.status,
+      lastSeenAt: r.bus.last_seen_at,
+    },
+    route: {
+      id: r.route.id,
+      code: r.route.code,
+      name: r.route.name,
+      color: r.route.color,
+      mode: r.route.mode,
+      operator: r.route.operator,
+      lengthKm: r.route.length_km,
+    },
+    // Flip de GeoJSON [lng, lat] a Leaflet [lat, lng]
+    polylineLatLng: r.polyline.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
+    nextLandmark: r.next_landmark
+      ? {
+          id: r.next_landmark.id,
+          name: r.next_landmark.name,
+          type: r.next_landmark.type,
+          location: r.next_landmark.location,
+          etaSeconds: r.next_landmark.eta_seconds,
+          distanceM: r.next_landmark.distance_m,
+        }
+      : null,
+    etaToUser: r.eta_to_user
+      ? {
+          etaSeconds: r.eta_to_user.eta_seconds,
+          distanceM: r.eta_to_user.distance_m,
+          nearestCorridorPoint: r.eta_to_user.nearest_corridor_point,
+        }
+      : null,
+    stats: {
+      completedKm: r.stats.completed_km,
+      completedPct: r.stats.completed_pct,
+      remainingKm: r.stats.remaining_km,
+    },
+  };
+}
+```
+
+**Test (TDD primero):**
+```ts
+it('mapea bus_details + flip polyline lng,lat → lat,lng', () => {
+  const r: BackendBusDetailsResponse = {
+    bus: { id: 'b1', plate: 'ABC123',
+      location: { lat: 11, lng: -74 },
+      heading: 90, speed_kmh: 25, fraction_of_corridor: 0.5,
+      status: 'IN_SERVICE', last_seen_at: '2026-05-23T...' },
+    route: { id: 'r1', code: 'C12', name: 'X', color: '#1E5EFF',
+      mode: 'TRADITIONAL', operator: 'Coochofal', length_km: 17.65 },
+    polyline: {
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [[-74.8, 11.0], [-74.81, 11.01]] },
+      properties: { route_id: 'r1', code: 'C12', color: '#1E5EFF' },
+    },
+    next_landmark: null,
+    eta_to_user: null,
+    stats: { completed_km: 8.8, completed_pct: 0.5, remaining_km: 8.85 },
+  };
+  const out = backendBusDetailsToBusDetails(r);
+  expect(out.bus.speedKmh).toBe(25);
+  expect(out.polylineLatLng).toEqual([[11.0, -74.8], [11.01, -74.81]]);
+});
+```
+
+### 13.5 Método en `src/lib/dataSource.ts`
+
+```ts
+async getBusDetails(busId: string, userLocation?: LatLng): Promise<BusDetails> {
+  if (USE_MOCKS) {
+    // Mock simple: usa primera ruta + primer paradero
+    const paradero = paraderosMock[0];
+    return {
+      bus: { id: busId, plate: 'MOCK123',
+        location: { lat: paradero.lat, lng: paradero.lng },
+        heading: 0, speedKmh: 25, fractionOfCorridor: 0.3,
+        status: 'IN_SERVICE', lastSeenAt: new Date().toISOString() },
+      route: { id: 'mock-route', code: 'C12', name: 'Centro-Uninorte',
+        color: '#1E5EFF', mode: 'TRADITIONAL', operator: 'Coochofal', lengthKm: 17.65 },
+      polylineLatLng: [[paradero.lat, paradero.lng], [paradero.lat + 0.01, paradero.lng]],
+      nextLandmark: { id: paradero.id, name: paradero.nombre, type: 'NEIGHBORHOOD',
+        location: { lat: paradero.lat, lng: paradero.lng },
+        etaSeconds: 240, distanceM: 800 },
+      etaToUser: userLocation ? { etaSeconds: 320, distanceM: 1200,
+        nearestCorridorPoint: { lat: paradero.lat, lng: paradero.lng } } : null,
+      stats: { completedKm: 5.3, completedPct: 0.3, remainingKm: 12.35 },
+    };
+  }
+  const params = userLocation
+    ? `?lat=${userLocation.lat}&lng=${userLocation.lng}`
+    : '';
+  const raw = await api.get<BackendBusDetailsResponse>(`/buses/${busId}/details${params}`);
+  return backendBusDetailsToBusDetails(raw);
+},
+```
+
+### 13.6 Hook en `src/hooks/useBusDetails.ts`
+
+```ts
+import { useQuery } from '@tanstack/react-query';
+import { dataSource } from '../lib/dataSource';
+import type { LatLng } from '../types';
+
+export function useBusDetails(busId: string | null, userLocation?: LatLng) {
+  return useQuery({
+    queryKey: ['bus-details', busId, userLocation?.lat, userLocation?.lng],
+    queryFn: () => dataSource.getBusDetails(busId!, userLocation),
+    enabled: !!busId,
+    // SOLO snapshot inicial: el bus se anima en el polyline via WS bus_position
+    staleTime: Infinity,
+    refetchInterval: false,
+    retry: (failureCount, error) => {
+      // No reintentar 404 ni 410
+      if (error instanceof Error && /404|410/.test(error.message)) return false;
+      return failureCount < 1;
+    },
+  });
+}
+```
+
+### 13.7 Componente `src/components/map/BusDetailSheet.tsx`
+
+```tsx
+import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
+import { useBusDetails } from '../../hooks/useBusDetails';
+import { useCreateWaitSession } from '../../hooks/useWaitSession';
+import { useAppStore } from '../../store/useAppStore';
+import BottomSheet from '../ui/BottomSheet';
+import type { LatLng } from '../../types';
+
+interface Props {
+  busId: string | null;
+  onClose: () => void;
+}
+
+export default function BusDetailSheet({ busId, onClose }: Props) {
+  const navigate = useNavigate();
+  const userLat = useAppStore((s) => s.userLat);
+  const userLng = useAppStore((s) => s.userLng);
+  const userLocation: LatLng | undefined =
+    userLat != null && userLng != null ? { lat: userLat, lng: userLng } : undefined;
+
+  const { data: details, isLoading, error } = useBusDetails(busId, userLocation);
+  const createWait = useCreateWaitSession();
+
+  if (!busId) return null;
+
+  if (isLoading) {
+    return (
+      <BottomSheet onClose={onClose}>
+        <div className="p-6 text-text-secondary">Cargando…</div>
+      </BottomSheet>
+    );
+  }
+
+  // Manejo de 410 — bus completó recorrido
+  const errorMsg = error instanceof Error ? error.message : '';
+  if (/410/.test(errorMsg)) {
+    return (
+      <BottomSheet onClose={onClose}>
+        <div className="p-6 text-center">
+          <p className="font-medium">Este bus completó su recorrido</p>
+          <button onClick={onClose} className="mt-4 px-4 py-2 bg-brand text-white rounded-card">
+            Cerrar
+          </button>
+        </div>
+      </BottomSheet>
+    );
+  }
+
+  if (!details) return null;
+
+  const hasUserLocation = !!userLocation;
+  const showEta = hasUserLocation && details.etaToUser?.etaSeconds != null;
+  const showNextLandmark = !showEta && details.nextLandmark?.etaSeconds != null;
+
+  async function handleAvisame() {
+    if (!hasUserLocation || !details) return;
+    await createWait.mutateAsync({
+      location: userLocation!,
+      route_id: details.route.id,
+      notify_seconds_before: 180,
+    });
+    // Mostrar toast "Te avisaremos cuando esté cerca"
+    onClose();
+  }
+
+  return (
+    <BottomSheet onClose={onClose}>
+      <div className="p-4 space-y-4">
+        {/* Header */}
+        <div>
+          <div className="flex items-baseline gap-2">
+            <span
+              className="px-3 py-1 rounded-card-lg text-white text-sm font-bold"
+              style={{ backgroundColor: details.route.color }}
+            >
+              {details.route.code}
+            </span>
+            <span className="font-medium">{details.route.name}</span>
+          </div>
+          <p className="text-sm text-text-secondary mt-1">
+            Placa {details.bus.plate} · {details.route.operator}
+          </p>
+        </div>
+
+        {/* Hero ETA */}
+        <div className="bg-surface-raised rounded-card p-4 text-center">
+          {showEta ? (
+            <>
+              <p className="text-text-secondary text-sm">Llega a ti en</p>
+              <p className="text-3xl font-bold text-brand">
+                {Math.max(1, Math.round(details.etaToUser!.etaSeconds! / 60))} min
+              </p>
+              <p className="text-xs text-text-secondary">
+                {details.etaToUser!.distanceM} m de distancia
+              </p>
+            </>
+          ) : showNextLandmark ? (
+            <>
+              <p className="text-text-secondary text-sm">Próxima parada</p>
+              <p className="text-xl font-bold">{details.nextLandmark!.name}</p>
+              <p className="text-sm text-brand">
+                en {Math.max(1, Math.round(details.nextLandmark!.etaSeconds! / 60))} min
+              </p>
+            </>
+          ) : (
+            <p className="text-text-secondary">Sin información de tiempo</p>
+          )}
+        </div>
+
+        {/* Progress bar */}
+        <div>
+          <div className="flex justify-between text-xs text-text-secondary mb-1">
+            <span>{details.stats.completedKm} km recorridos</span>
+            <span>{details.stats.remainingKm} km restantes</span>
+          </div>
+          <div className="h-2 bg-surface-raised rounded-full overflow-hidden">
+            <motion.div
+              className="h-full bg-brand"
+              initial={{ width: 0 }}
+              animate={{ width: `${details.stats.completedPct * 100}%` }}
+              transition={{ duration: 0.8, ease: 'easeOut' }}
+            />
+          </div>
+        </div>
+
+        {/* CTA */}
+        <button
+          onClick={handleAvisame}
+          disabled={!hasUserLocation || createWait.isPending}
+          title={!hasUserLocation ? 'Activa tu ubicación primero' : undefined}
+          className="w-full bg-brand text-white py-3 rounded-card-lg font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {createWait.isPending ? 'Creando aviso…' : 'Avísame cuando llegue'}
+        </button>
+      </div>
+    </BottomSheet>
+  );
+}
+```
+
+### 13.8 Integración en `MapaPage.tsx`
+
+```tsx
+import { useState, useEffect } from 'react';
+import { Polyline } from 'react-leaflet';
+import BusDetailSheet from '../components/map/BusDetailSheet';
+import { useBusDetails } from '../hooks/useBusDetails';
+import { useRealtime } from '../hooks/useRealtime';
+
+export default function MapaPage() {
+  // ... estado existente
+  const [selectedBusId, setSelectedBusId] = useState<string | null>(null);
+  const userLocation = /* ... */;
+  const { data: busDetails } = useBusDetails(selectedBusId, userLocation);
+
+  // Suscribirse al room del bus específico para animarlo en vivo
+  useRealtime({
+    rooms: selectedBusId ? [`bus:${selectedBusId}`] : [],
+    enabled: !!selectedBusId,
+    handlers: {
+      bus_position: (event) => {
+        if (event.busId !== selectedBusId) return;
+        // Tu lógica existente de animar el bus en el mapa ya lo cubre
+      },
+    },
+  });
+
+  return (
+    <div className="w-full h-screen relative">
+      <MapView
+        center={...}
+        paraderos={...}
+        buses={buses.map((b) => ({
+          ...b,
+          highlighted: b.id === selectedBusId, // opacidad 1 vs 0.5
+        }))}
+        onBusClick={(busId) => setSelectedBusId(busId)}
+      >
+        {/* Polyline solo cuando hay bus seleccionado */}
+        {busDetails && (
+          <Polyline
+            positions={busDetails.polylineLatLng}
+            pathOptions={{
+              color: busDetails.route.color,
+              weight: 5,
+              opacity: 0.8,
+            }}
+          />
+        )}
+      </MapView>
+
+      <BusDetailSheet
+        busId={selectedBusId}
+        onClose={() => setSelectedBusId(null)}
+      />
+    </div>
+  );
+}
+```
+
+### 13.9 MSW handler en `src/lib/mockHandlers.ts`
+
+```ts
+http.get(`${BASE}/buses/:id/details`, ({ params, request }) => {
+  const url = new URL(request.url);
+  const hasUserLoc = url.searchParams.has('lat') && url.searchParams.has('lng');
+  return HttpResponse.json<BackendBusDetailsResponse>({
+    bus: {
+      id: params.id as string,
+      plate: 'MCK456',
+      location: { lat: 11.012, lng: -74.812 },
+      heading: 245,
+      speed_kmh: 28,
+      fraction_of_corridor: 0.34,
+      status: 'IN_SERVICE',
+      last_seen_at: new Date().toISOString(),
+    },
+    route: { id: 'r1', code: 'C12', name: 'Centro - Uninorte',
+      color: '#1E5EFF', mode: 'TRADITIONAL', operator: 'Coochofal', length_km: 17.65 },
+    polyline: {
+      type: 'Feature',
+      geometry: { type: 'LineString',
+        coordinates: [[-74.78, 10.96], [-74.81, 11.0], [-74.85, 11.02]] },
+      properties: { route_id: 'r1', code: 'C12', color: '#1E5EFF' },
+    },
+    next_landmark: {
+      id: 'lm-uninorte', name: 'Universidad del Norte', type: 'UNIVERSITY',
+      location: { lat: 11.018, lng: -74.851 },
+      eta_seconds: 240, distance_m: 1200,
+    },
+    eta_to_user: hasUserLoc ? {
+      eta_seconds: 320, distance_m: 1500,
+      nearest_corridor_point: { lat: 11.015, lng: -74.849 },
+    } : null,
+    stats: { completed_km: 6.0, completed_pct: 0.34, remaining_km: 11.65 },
+  });
+}),
+```
+
+### 13.10 Notas de UX
+
+- **Performance del Polyline:** Leaflet renderiza 519 puntos sin problema. Si en algún momento se ve laggy, usa `<canvas>` en vez de SVG: `<Polyline renderer={L.canvas()} ...>`.
+- **Cuando se cierra el sheet**, asegúrate de unsetear `selectedBusId` → el `useRealtime` se desuscribe automáticamente y el Polyline desaparece.
+- **Si hay un trip activo** del usuario en una ruta diferente, no romper esa suscripción WS — `useRealtime` con singleton de socket lo maneja bien.
+- **El bus seleccionado** debe destacarse visualmente sobre los demás (otros buses con `opacity: 0.4`, el seleccionado `opacity: 1` + borde).
+
 ### Sesión típica
 
 1. Abres Cursor/Claude con este doc adjunto + el repo del frontend abierto.
