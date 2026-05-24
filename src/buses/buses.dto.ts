@@ -1,6 +1,13 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsNumber, IsOptional, Max, Min } from 'class-validator';
+import { IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+
+export class ListBusesQueryDto {
+  @ApiPropertyOptional({ default: 'BAQ' })
+  @IsOptional()
+  @IsString()
+  city?: string = 'BAQ';
+}
 
 export class BusDetailsQueryDto {
   @ApiPropertyOptional({

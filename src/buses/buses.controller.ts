@@ -8,7 +8,7 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../common/decorators/public.decorator';
 import { BusEngineService } from './bus-engine.service';
-import { BusDetailsQueryDto } from './buses.dto';
+import { BusDetailsQueryDto, ListBusesQueryDto } from './buses.dto';
 import { BusesService } from './buses.service';
 
 @ApiTags('buses')
@@ -18,6 +18,37 @@ export class BusesController {
     private readonly buses: BusesService,
     private readonly busEngine: BusEngineService,
   ) {}
+
+  @Public()
+  @Get()
+  @ApiOperation({
+    summary:
+      '📦 Snapshot inicial de TODOS los buses IN_SERVICE en una ciudad',
+    description:
+      'Devuelve todos los buses activos en una sola llamada. Útil para ' +
+      'que el frontend popule el mapa al cargar, antes de empezar a recibir ' +
+      'updates por WebSocket bus_position. Cada bus trae id, plate, ruta, ' +
+      'ubicación, heading, speed.',
+  })
+  async list(@Query() q: ListBusesQueryDto) {
+    const raw = await this.buses.listAllInService(q.city ?? 'BAQ');
+    return {
+      city: q.city ?? 'BAQ',
+      count: raw.length,
+      buses: raw.map((b) => ({
+        id: b.id,
+        plate: b.plate,
+        route_id: b.route_id,
+        route_code: b.route_code,
+        location: { lat: b.lat, lng: b.lng },
+        heading: b.heading,
+        speed_kmh: b.speed_kmh,
+        fraction_of_corridor: b.fraction_of_corridor,
+        status: b.status,
+        last_seen_at: b.last_seen_at,
+      })),
+    };
+  }
 
   @Public()
   @Get(':id/details')
