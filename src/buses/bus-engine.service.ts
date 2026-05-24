@@ -140,10 +140,25 @@ export class BusEngineService implements OnModuleInit {
    * Advances all IN_SERVICE buses by one tick.
    * Uses a single UPDATE ... FROM (subquery) ... RETURNING for efficiency.
    *
-   * Movement model:
-   *   meters_advanced = speed_kmh × (1000 / 3600) × (tick_ms / 1000)
-   *   new_fraction    = (old_fraction + meters_advanced / corridor_length_m) % 1
-   *   new_location    = ST_LineInterpolatePoint(corridor.path, new_fraction)
+   * Movement model con BOUNCE (no wrap):
+   *   delta           = speed_kmh × (1000 / 3600) × (tick_ms / 1000) / length_m
+   *   raw_fraction    = fraction + direction × delta
+   *
+   *   Si raw > 1.0  → llegamos al final del corridor:
+   *                   new_fraction = 2.0 - raw_fraction (rebota hacia atrás)
+   *                   new_direction = -direction
+   *   Si raw < 0.0  → llegamos al inicio (cuando ya venía devolviéndose):
+   *                   new_fraction = -raw_fraction (rebota hacia adelante)
+   *                   new_direction = -direction
+   *   Sino          → new_fraction = raw_fraction, dirección igual
+   *
+   *   El bus visualmente se "devuelve" por la misma ruta en vez de hacer
+   *   teleport al inicio (que era el bug del wrap raw_fraction - FLOOR(...)).
+   *
+   *   Heading: ST_Azimuth respeta la dirección — si va backward, el bearing
+   *   se calcula desde un punto "más adelante" hacia uno "más atrás" del
+   *   corridor, lo que invierte el ángulo 180°. Resultado: el modelo 3D
+   *   del bus mira en sentido contrario cuando regresa.
    */
   private async advanceAll(): Promise<UpdatedBusRow[]> {
     const tickSeconds = this.tickMs / 1000;
@@ -158,9 +173,10 @@ export class BusEngineService implements OnModuleInit {
           c.code AS city_code,
           rc.length_m,
           b.speed_kmh,
-          -- raw advance (may exceed 1.0 if bus loops past the end)
+          b.direction,
           (b.fraction_of_corridor
-            + (b.speed_kmh * 1000.0 / 3600.0 * ${tickSeconds}) / NULLIF(rc.length_m, 0)
+            + b.direction * (b.speed_kmh * 1000.0 / 3600.0 * ${tickSeconds})
+              / NULLIF(rc.length_m, 0)
           )::double precision AS raw_fraction
         FROM buses b
         JOIN routes r ON r.id = b.route_id
@@ -174,18 +190,42 @@ export class BusEngineService implements OnModuleInit {
         SELECT
           ra.id, ra.route_id, ra.route_code, ra.city_code,
           ra.length_m, ra.speed_kmh,
-          -- Wrap to [0, 1) using FLOOR (portable, no type cast issues)
-          (ra.raw_fraction - FLOOR(ra.raw_fraction))::double precision AS new_fraction
+          CASE
+            WHEN ra.raw_fraction > 1.0
+              THEN GREATEST(0.0::double precision, 2.0 - ra.raw_fraction)
+            WHEN ra.raw_fraction < 0.0
+              THEN LEAST(1.0::double precision, -ra.raw_fraction)
+            ELSE ra.raw_fraction
+          END AS new_fraction,
+          CASE
+            WHEN ra.raw_fraction > 1.0 OR ra.raw_fraction < 0.0
+              THEN -ra.direction
+            ELSE ra.direction
+          END::smallint AS new_direction
         FROM raw_advance ra
       ),
       with_geom AS (
         SELECT
           a.*,
           ST_LineInterpolatePoint(rc.path::geometry, a.new_fraction)::geography AS new_location,
-          -- Heading: bearing from old point to new point
+          -- Heading: bearing en el sentido de marcha actual.
+          -- Forward (dir=1):  punto antes -> punto después
+          -- Backward (dir=-1): punto después -> punto antes (flip 180°)
           degrees(ST_Azimuth(
-            ST_LineInterpolatePoint(rc.path::geometry, GREATEST(a.new_fraction - 0.001, 0)),
-            ST_LineInterpolatePoint(rc.path::geometry, LEAST(a.new_fraction + 0.001, 1))
+            ST_LineInterpolatePoint(
+              rc.path::geometry,
+              CASE WHEN a.new_direction = 1
+                THEN GREATEST(a.new_fraction - 0.001, 0)
+                ELSE LEAST(a.new_fraction + 0.001, 1)
+              END
+            ),
+            ST_LineInterpolatePoint(
+              rc.path::geometry,
+              CASE WHEN a.new_direction = 1
+                THEN LEAST(a.new_fraction + 0.001, 1)
+                ELSE GREATEST(a.new_fraction - 0.001, 0)
+              END
+            )
           )) AS new_heading
         FROM advanced a
         JOIN route_corridors rc ON rc.route_id = a.route_id
@@ -193,6 +233,7 @@ export class BusEngineService implements OnModuleInit {
       UPDATE buses b
       SET
         fraction_of_corridor = w.new_fraction,
+        direction = w.new_direction,
         current_location = w.new_location,
         heading = w.new_heading,
         last_seen_at = NOW()

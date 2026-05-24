@@ -179,6 +179,9 @@ async function seedBuses(route: RouteSeed, routeId: string, count: number): Prom
     const speed = minSpeed + Math.random() * (maxSpeed - minSpeed);
     // Heading: 0-359 (random initial, BusEngine will recompute)
     const heading = Math.floor(Math.random() * 360);
+    // Direction inicial random: la mitad de los buses arrancan
+    // avanzando y la otra mitad devolviéndose. Visualmente más vivo.
+    const direction = Math.random() < 0.5 ? 1 : -1;
 
     // Generate unique plate (retry on collision)
     let plate = randomPlate();
@@ -186,7 +189,7 @@ async function seedBuses(route: RouteSeed, routeId: string, count: number): Prom
     while (attempts < 5) {
       try {
         await prisma.$executeRawUnsafe(`
-          INSERT INTO buses (id, route_id, plate, current_location, fraction_of_corridor, speed_kmh, heading, last_seen_at, status)
+          INSERT INTO buses (id, route_id, plate, current_location, fraction_of_corridor, speed_kmh, heading, direction, last_seen_at, status)
           VALUES (
             gen_random_uuid(),
             '${routeId}'::uuid,
@@ -195,6 +198,7 @@ async function seedBuses(route: RouteSeed, routeId: string, count: number): Prom
             ${fraction},
             ${speed.toFixed(2)},
             ${heading},
+            ${direction},
             NOW(),
             'IN_SERVICE'::bus_status
           );

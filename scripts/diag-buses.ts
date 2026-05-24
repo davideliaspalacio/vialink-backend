@@ -47,6 +47,7 @@ interface DiagRow {
   status: string;
   speed_kmh: number;
   fraction: number;
+  direction: number;
   length_m: number | null;
   last_seen_at: Date;
   seconds_since_seen: number;
@@ -63,6 +64,7 @@ async function main() {
       b.status::text AS status,
       b.speed_kmh,
       b.fraction_of_corridor AS fraction,
+      b.direction,
       rc.length_m,
       b.last_seen_at,
       EXTRACT(EPOCH FROM (NOW() - b.last_seen_at))::int AS seconds_since_seen
@@ -79,10 +81,10 @@ async function main() {
 
   console.log(`\n📊 ${total} buses en DB\n`);
   console.log(
-    'plate    route status      speed  fraction  length_m  last_seen  delta/tick  flag',
+    'plate    route status      speed  fraction  dir  length_m  last_seen  delta/tick  flag',
   );
   console.log(
-    '─────── ───── ──────────  ─────  ────────  ────────  ─────────  ──────────  ────',
+    '─────── ───── ──────────  ─────  ────────  ───  ────────  ─────────  ──────────  ────',
   );
 
   for (const r of rows) {
@@ -107,10 +109,12 @@ async function main() {
         ? (r.speed_kmh * 1000.0 / 3600.0 * tickSec) / r.length_m
         : 0;
 
+    const dirArrow = r.direction === 1 ? '→' : r.direction === -1 ? '←' : '?';
     console.log(
       `${r.plate.padEnd(7)} ${r.route_code.padEnd(5)} ${r.status.padEnd(10)}  ` +
         `${r.speed_kmh.toFixed(1).padStart(5)}  ` +
         `${r.fraction.toFixed(4).padStart(6)}  ` +
+        `${dirArrow.padStart(2)}  ` +
         `${String(r.length_m ?? 'NULL').padStart(8)}  ` +
         `${String(r.seconds_since_seen).padStart(6)}s    ` +
         `${deltaFraction.toExponential(2).padStart(8)}  ` +

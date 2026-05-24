@@ -179,6 +179,9 @@ model Bus {
   fractionOfCorridor Float                                 @default(0) @map("fraction_of_corridor")
   speedKmh           Float                                 @default(0) @map("speed_kmh")
   heading            Float?
+  /// Sentido de marcha: 1 = avanzando (fraction sube), -1 = devolviéndose (fraction baja).
+  /// El BusEngine usa esto para bounce en los extremos del corridor en vez de teleport al inicio.
+  direction          Int                                   @default(1) @db.SmallInt
   lastSeenAt         DateTime                              @default(now()) @map("last_seen_at")
   status             BusStatus                             @default(IN_SERVICE)
 
