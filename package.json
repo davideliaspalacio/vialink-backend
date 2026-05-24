@@ -27,7 +27,8 @@
     "smoke": "curl -s http://localhost:3000/health | jq",
     "snap-corridors": "ts-node scripts/snap-corridors-to-roads.ts",
     "refine-corridors": "ts-node scripts/refine-corridors-recursive.ts",
-    "reduce-buses": "ts-node scripts/reduce-buses.ts"
+    "reduce-buses": "ts-node scripts/reduce-buses.ts",
+    "diag-buses": "ts-node scripts/diag-buses.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

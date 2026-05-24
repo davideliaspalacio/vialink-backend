@@ -62,16 +62,32 @@ export class BusEngineService implements OnModuleInit {
   }
 
   onModuleInit() {
+    // Reemplazamos el @Interval estático por uno dinámico que respeta
+    // SIMULATOR_BUS_TICK_MS. Antes el @Interval iba a 1000ms hardcoded
+    // pero el SQL usaba tickMs del config → buses se movían a velocidad
+    // distinta a la real si SIMULATOR_BUS_TICK_MS != 1000.
+    const existing = this.schedulerRegistry.doesExist(
+      'interval',
+      'bus-engine-tick',
+    );
+    if (existing) {
+      this.schedulerRegistry.deleteInterval('bus-engine-tick');
+    }
+    const interval = setInterval(() => {
+      void this.tick();
+    }, this.tickMs);
+    this.schedulerRegistry.addInterval('bus-engine-tick', interval);
+
     this.logger.log(
-      `🚌 BusEngine armed (tick=${this.tickMs}ms). First tick in ${this.tickMs}ms.`,
+      `🚌 BusEngine armed (tick=${this.tickMs}ms, watchdog=30s).`,
     );
   }
 
   /**
-   * Runs at SIMULATOR_BUS_TICK_MS interval (default 1000ms).
-   * Re-entrant safe: if a tick takes >tickMs, the next one is skipped.
+   * Bus tick: avanza todos los buses IN_SERVICE.
+   * Re-entrant safe: si un tick tarda más que tickMs, el siguiente se salta.
+   * El interval real se registra dinámicamente en onModuleInit usando tickMs.
    */
-  @Interval('bus-engine-tick', 1000)
   async tick() {
     if (!this.enabled) return;
     if (this.isTicking) {
@@ -194,6 +210,57 @@ export class BusEngineService implements OnModuleInit {
         ST_X(b.current_location::geometry) AS lng;
       `,
     );
+  }
+
+  /**
+   * Watchdog cada 30s.
+   *
+   * Detecta y arregla buses "stuck" — buses IN_SERVICE cuyo `speed_kmh`
+   * cayó a 0 (o muy bajo) por cualquier razón. Para el demo NO queremos
+   * buses quietos: si lo detectamos, le ponemos una velocidad sana
+   * (igual al rango del seed: 20-35 km/h TRAD, 30-45 km/h BRT).
+   *
+   * También recupera buses que quedaron en OUT_OF_SERVICE / BREAK por
+   * cualquier razón (no deberían existir hoy, pero defensivo).
+   */
+  @Interval('bus-engine-watchdog', 30_000)
+  async watchdog() {
+    if (!this.enabled) return;
+
+    try {
+      const stuck = await this.prisma.$queryRawUnsafe<
+        { id: string; plate: string; route_code: string; mode: string; old_speed: number; old_status: string }[]
+      >(`
+        UPDATE buses b
+        SET
+          speed_kmh = CASE
+            WHEN r.mode = 'BRT' THEN 30 + random() * 15   -- 30-45 km/h
+            ELSE 20 + random() * 15                        -- 20-35 km/h
+          END,
+          status = 'IN_SERVICE'::bus_status,
+          last_seen_at = NOW()
+        FROM routes r
+        WHERE r.id = b.route_id
+          AND (b.speed_kmh < 1 OR b.status::text <> 'IN_SERVICE')
+        RETURNING
+          b.id,
+          b.plate,
+          r.code AS route_code,
+          r.mode::text AS mode,
+          b.speed_kmh AS old_speed,
+          b.status::text AS old_status;
+      `);
+
+      if (stuck.length > 0) {
+        this.logger.warn(
+          `🐶 Watchdog recuperó ${stuck.length} bus(es) stuck: ${stuck
+            .map((s) => `${s.plate}(${s.route_code})`)
+            .join(', ')}`,
+        );
+      }
+    } catch (err) {
+      this.logger.error('Watchdog failed', err);
+    }
   }
 
   // ---------- Control ----------
