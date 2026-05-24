@@ -19,6 +19,7 @@ import { LandmarksModule } from './landmarks/landmarks.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { RoutesModule } from './routes/routes.module';
+import { RoutingModule } from './routing/routing.module';
 import { SimulatorModule } from './simulator/simulator.module';
 import { TripsModule } from './trips/trips.module';
 import { UsersModule } from './users/users.module';
@@ -70,6 +71,7 @@ import { WaitSessionsModule } from './wait-sessions/wait-sessions.module';
     RoutesModule,
     BusesModule, // includes BusEngine (moves buses every tick)
     DiscoveryModule, // POST /buses-at-point ⭐
+    RoutingModule, // POST /routing/recommend — el core: user_location + destino → mejor bus a tomar
 
     // ===== Auth + users (Bloque 3) =====
     AuthModule, // global JWT guard + Supabase auth proxy
