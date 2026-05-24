@@ -3735,6 +3735,532 @@ http.get(`${BASE}/buses/:id/details`, ({ params, request }) => {
 - **Si hay un trip activo** del usuario en una ruta diferente, no romper esa suscripción WS — `useRealtime` con singleton de socket lo maneja bien.
 - **El bus seleccionado** debe destacarse visualmente sobre los demás (otros buses con `opacity: 0.4`, el seleccionado `opacity: 1` + borde).
 
+---
+
+### 13.11 🎬 Animaciones para el pitch (polish visual)
+
+Esta sub-sección reúne 7 mejoras visuales para que la feature "click en bus"
+se vea **cinematográfica durante la demo**. Todas usan framer-motion (ya
+está en `package.json`) y CSS animations estándar. Cero dependencias nuevas.
+
+**Prioridad sugerida** (de mayor a menor impacto visual):
+
+| # | Mejora | Impacto | Esfuerzo |
+|---|---|---|---|
+| 4 | **ETA countdown en vivo** ⭐ el wow | 🔥🔥🔥🔥 | 45 min |
+| 3 | Polyline drawn animation | 🔥🔥🔥 | 1h |
+| 2 | Bus seleccionado destacado | 🔥🔥🔥 | 20 min |
+| 1 | Botón → checkmark con spring | 🔥🔥 | 30 min |
+| 6 | Spring physics al abrir modal | 🔥🔥 | 5 min |
+| 5 | Bus rotado según heading | 🔥 | 10 min |
+| 7 | Trail detrás del bus (opcional) | 🔥 | 1h |
+
+---
+
+#### A) Botón "Avísame cuando llegue" → checkmark animado (#1)
+
+**Archivo:** `src/components/map/BusDetailSheet.tsx`
+
+Reemplaza el botón estático por un componente con estados:
+
+```tsx
+import { motion, AnimatePresence } from 'framer-motion';
+import { useState } from 'react';
+
+function AvisameButton({
+  disabled,
+  onConfirm,
+  etaSeconds,
+}: {
+  disabled: boolean;
+  onConfirm: () => Promise<void>;
+  etaSeconds: number | null;
+}) {
+  const [state, setState] = useState<'idle' | 'loading' | 'success'>('idle');
+
+  async function handleClick() {
+    setState('loading');
+    try {
+      await onConfirm();
+      setState('success');
+    } catch {
+      setState('idle');
+    }
+  }
+
+  return (
+    <motion.button
+      onClick={handleClick}
+      disabled={disabled || state !== 'idle'}
+      layout
+      transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+      className={[
+        'w-full py-3 rounded-card-lg font-bold transition-colors duration-300',
+        state === 'success'
+          ? 'bg-success text-white'
+          : 'bg-brand text-white disabled:opacity-50',
+      ].join(' ')}
+    >
+      <AnimatePresence mode="wait">
+        {state === 'idle' && (
+          <motion.span
+            key="idle"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+          >
+            Avísame cuando llegue
+          </motion.span>
+        )}
+        {state === 'loading' && (
+          <motion.span
+            key="loading"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            Activando aviso…
+          </motion.span>
+        )}
+        {state === 'success' && (
+          <motion.span
+            key="success"
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="flex items-center justify-center gap-2"
+          >
+            <motion.span
+              initial={{ scale: 0, rotate: -180 }}
+              animate={{ scale: 1, rotate: 0 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 15 }}
+            >
+              ✓
+            </motion.span>
+            Te avisaremos a {etaSeconds != null
+              ? Math.max(1, Math.round((etaSeconds - 180) / 60))
+              : '3'} min
+          </motion.span>
+        )}
+      </AnimatePresence>
+    </motion.button>
+  );
+}
+```
+
+---
+
+#### B) Bus seleccionado destacado (#2)
+
+**Archivo:** `src/components/map/BusMarker.tsx` (modificar el existente)
+
+Acepta prop `selected` y `dimmed`. Aplica scale + opacity con framer-motion
+y un halo CSS pulsante.
+
+```tsx
+import { Marker } from 'react-leaflet';
+import L from 'leaflet';
+import { useEffect, useState } from 'react';
+import type { Bus } from '../../types';
+
+interface Props {
+  bus: Bus;
+  routeColor?: string;
+  selected?: boolean;
+  dimmed?: boolean;
+  onClick?: (busId: string) => void;
+}
+
+export default function BusMarker({ bus, routeColor = '#1E5EFF', selected, dimmed, onClick }: Props) {
+  const [pos, setPos] = useState<[number, number]>([bus.lat, bus.lng]);
+
+  // Interpolación de movimiento (igual que antes)
+  useEffect(() => {
+    const start = pos;
+    const end: [number, number] = [bus.lat, bus.lng];
+    const ms = 1000;
+    const t0 = performance.now();
+    let raf = 0;
+    function step(t: number) {
+      const p = Math.min(1, (t - t0) / ms);
+      setPos([start[0] + (end[0] - start[0]) * p, start[1] + (end[1] - start[1]) * p]);
+      if (p < 1) raf = requestAnimationFrame(step);
+    }
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [bus.lat, bus.lng]);
+
+  const scale = selected ? 1.4 : dimmed ? 0.85 : 1;
+  const opacity = selected ? 1 : dimmed ? 0.35 : 1;
+  const rotation = bus.heading ?? 0;
+
+  const icon = L.divIcon({
+    className: 'bus-marker-wrapper',
+    html: `
+      <div class="bus-marker-inner" style="
+        transform: scale(${scale}) rotate(${rotation}deg);
+        opacity: ${opacity};
+        transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease-out;
+      ">
+        ${selected ? `<div class="bus-halo" style="background:${routeColor};"></div>` : ''}
+        <div class="bus-bubble" style="background:${routeColor};">${bus.rutaNombre}</div>
+      </div>
+    `,
+    iconSize: [40, 24],
+    iconAnchor: [20, 12],
+  });
+
+  return (
+    <Marker
+      position={pos}
+      icon={icon}
+      eventHandlers={{ click: () => onClick?.(bus.id) }}
+    />
+  );
+}
+```
+
+**CSS en `src/index.css`:**
+
+```css
+.bus-marker-wrapper {
+  background: transparent !important;
+  border: none !important;
+}
+
+.bus-marker-inner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bus-bubble {
+  color: white;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+  white-space: nowrap;
+}
+
+.bus-halo {
+  position: absolute;
+  inset: -8px;
+  border-radius: 999px;
+  opacity: 0.5;
+  animation: bus-pulse 1.8s ease-out infinite;
+  z-index: -1;
+}
+
+@keyframes bus-pulse {
+  0%   { transform: scale(1);   opacity: 0.6; }
+  70%  { transform: scale(1.8); opacity: 0;   }
+  100% { transform: scale(2);   opacity: 0;   }
+}
+```
+
+**Uso en `MapaPage.tsx`:**
+
+```tsx
+{buses.map((b) => (
+  <BusMarker
+    key={b.id}
+    bus={b}
+    routeColor={routes[b.rutaNombre]?.color}
+    selected={b.id === selectedBusId}
+    dimmed={selectedBusId != null && b.id !== selectedBusId}
+    onClick={setSelectedBusId}
+  />
+))}
+```
+
+---
+
+#### C) Polyline drawn animation (#3)
+
+**Archivo:** `src/components/map/AnimatedRoutePolyline.tsx` (nuevo)
+
+Leaflet no anima polylines nativamente. Esta técnica usa `setStyle` con
+`dashOffset` y `requestAnimationFrame` para simular el "trazado":
+
+```tsx
+import { useEffect, useRef } from 'react';
+import { useMap } from 'react-leaflet';
+import L from 'leaflet';
+
+interface Props {
+  positions: [number, number][];
+  color: string;
+  durationMs?: number;
+}
+
+export default function AnimatedRoutePolyline({
+  positions,
+  color,
+  durationMs = 800,
+}: Props) {
+  const map = useMap();
+  const lineRef = useRef<L.Polyline | null>(null);
+
+  useEffect(() => {
+    if (positions.length < 2) return;
+
+    // Polyline base (invisible al inicio gracias a dashOffset)
+    const line = L.polyline(positions, {
+      color,
+      weight: 5,
+      opacity: 0.85,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(map);
+    lineRef.current = line;
+
+    // Calculamos el "perímetro" aproximado: suma de distancias entre puntos
+    const totalLen = positions.reduce((acc, p, i) => {
+      if (i === 0) return 0;
+      const prev = positions[i - 1];
+      const dx = p[0] - prev[0];
+      const dy = p[1] - prev[1];
+      return acc + Math.sqrt(dx * dx + dy * dy);
+    }, 0);
+    const scaledLen = totalLen * 100_000; // px aproximados a este zoom
+
+    // Truco: dashArray = "0 totalLen" hace la línea invisible.
+    // Animamos dashOffset desde scaledLen hacia 0.
+    const path = (line as any)._path as SVGPathElement;
+    if (path) {
+      path.style.strokeDasharray = `${scaledLen}`;
+      path.style.strokeDashoffset = `${scaledLen}`;
+      path.style.transition = `stroke-dashoffset ${durationMs}ms cubic-bezier(0.4, 0, 0.2, 1)`;
+      // Forzar reflow y luego animar a 0
+      requestAnimationFrame(() => {
+        path.style.strokeDashoffset = '0';
+      });
+    }
+
+    return () => {
+      line.remove();
+      lineRef.current = null;
+    };
+  }, [map, positions, color, durationMs]);
+
+  return null;
+}
+```
+
+**Uso en `MapaPage.tsx`:**
+
+```tsx
+{busDetails && (
+  <AnimatedRoutePolyline
+    positions={busDetails.polylineLatLng}
+    color={busDetails.route.color}
+  />
+)}
+```
+
+---
+
+#### D) ETA countdown en vivo ⭐ EL WOW (#4)
+
+**Archivo:** `src/components/ui/EtaCountdown.tsx` (nuevo)
+
+Componente reusable. Toma el `etaSeconds` inicial del backend y cuenta
+hacia abajo cada segundo. Cambia de color al acercarse y pulsa cuando
+está por llegar.
+
+```tsx
+import { motion, AnimatePresence } from 'framer-motion';
+import { useEffect, useState } from 'react';
+
+interface Props {
+  /** ETA inicial en segundos del backend */
+  initialEtaSeconds: number;
+  /** Estilo: 'large' para hero, 'small' para inline */
+  variant?: 'large' | 'small';
+}
+
+export default function EtaCountdown({ initialEtaSeconds, variant = 'large' }: Props) {
+  const [secondsLeft, setSecondsLeft] = useState(initialEtaSeconds);
+
+  // Reset cuando cambia el initial (nuevo bus seleccionado)
+  useEffect(() => {
+    setSecondsLeft(initialEtaSeconds);
+  }, [initialEtaSeconds]);
+
+  // Tick cada segundo
+  useEffect(() => {
+    const id = setInterval(() => {
+      setSecondsLeft((s) => Math.max(0, s - 1));
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const minutes = Math.floor(secondsLeft / 60);
+  const seconds = secondsLeft % 60;
+  const minutesDisplay = minutes >= 1 ? `${minutes}` : '0';
+
+  // Estado visual basado en cuánto falta
+  const isUrgent = secondsLeft < 30 && secondsLeft > 0;
+  const isArrivingNow = secondsLeft === 0;
+  const isClose = secondsLeft < 60 && secondsLeft >= 30;
+
+  const colorClass = isArrivingNow
+    ? 'text-success'
+    : isUrgent
+    ? 'text-accent'
+    : isClose
+    ? 'text-success'
+    : 'text-brand';
+
+  if (variant === 'large') {
+    return (
+      <motion.div
+        animate={isUrgent ? { scale: [1, 1.05, 1] } : {}}
+        transition={isUrgent ? { duration: 0.6, repeat: Infinity } : {}}
+        className="text-center"
+      >
+        <AnimatePresence mode="wait">
+          {isArrivingNow ? (
+            <motion.div
+              key="arriving"
+              initial={{ opacity: 0, y: 10, scale: 0.8 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ type: 'spring', stiffness: 400 }}
+              className={`text-3xl font-bold ${colorClass}`}
+            >
+              🚌 Llegando ahora
+            </motion.div>
+          ) : (
+            <motion.div
+              key={`${minutes}-${Math.floor(seconds / 10)}`}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.2 }}
+              className={`text-4xl font-bold ${colorClass}`}
+            >
+              {minutes >= 1
+                ? `${minutesDisplay} min`
+                : `${seconds} s`}
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {!isArrivingNow && minutes >= 1 && (
+          <div className="text-xs text-text-secondary mt-1">
+            {seconds}s
+          </div>
+        )}
+      </motion.div>
+    );
+  }
+
+  // variant 'small'
+  return (
+    <motion.span
+      key={`${minutes}-${Math.floor(seconds / 5)}`}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className={`font-bold ${colorClass}`}
+    >
+      {isArrivingNow ? 'ahora' : minutes >= 1 ? `${minutes} min` : `${seconds} s`}
+    </motion.span>
+  );
+}
+```
+
+**Uso en `BusDetailSheet.tsx`**, reemplazar el hero estático:
+
+```tsx
+<div className="bg-surface-raised rounded-card p-4 text-center">
+  {showEta ? (
+    <>
+      <p className="text-text-secondary text-sm mb-2">Llega a ti en</p>
+      <EtaCountdown initialEtaSeconds={details.etaToUser!.etaSeconds!} variant="large" />
+      <p className="text-xs text-text-secondary mt-2">
+        {details.etaToUser!.distanceM} m de distancia
+      </p>
+    </>
+  ) : showNextLandmark ? (
+    <>
+      <p className="text-text-secondary text-sm mb-2">Próxima parada</p>
+      <p className="text-xl font-bold">{details.nextLandmark!.name}</p>
+      <p className="text-sm mt-1">
+        en <EtaCountdown initialEtaSeconds={details.nextLandmark!.etaSeconds!} variant="small" />
+      </p>
+    </>
+  ) : null}
+</div>
+```
+
+**Por qué es "el wow":** el jurado ve **el bus en el mapa acercándose AL MISMO TIEMPO** que el ETA va bajando en el modal. La sincronización visual prueba que el sistema es real, no un mock.
+
+---
+
+#### E) Bus rotado según heading (#5)
+
+Ya incluido en B). El `transform: rotate(${rotation}deg)` viene del campo
+`bus.heading` que el backend devuelve en `bus_position` events. Solo
+asegúrate de que tu `Bus` type tenga `heading: number | null` y lo pasas
+al icon HTML.
+
+---
+
+#### F) Spring physics al abrir el modal (#6)
+
+**Archivo:** `src/components/ui/BottomSheet.tsx` (modificar el existente)
+
+Si tu BottomSheet ya usa framer-motion, solo cambia las props:
+
+```tsx
+<motion.div
+  initial={{ y: '100%' }}
+  animate={{ y: 0 }}
+  exit={{ y: '100%' }}
+  transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+>
+  {children}
+</motion.div>
+```
+
+Si usa CSS transitions, swap por framer. Es 5 minutos.
+
+---
+
+#### G) Trail detrás del bus (opcional, #7)
+
+Si llegas con tiempo de sobra el día anterior al pitch, puedes agregar
+un "trail" decorativo que sigue al bus seleccionado:
+
+```tsx
+// En BusMarker, cuando selected=true, agregar una serie de "ghost" markers
+// con opacidad decreciente y posición ligeramente delayed.
+// Esto requiere mantener un array de las últimas 5 posiciones del bus
+// y renderizar marcadores fantasma para cada una.
+```
+
+No incluyo el código completo porque es lo menos prioritario. Si Sebastián
+tiene tiempo, puede armarlo con una `useRef<Array<[lat, lng]>>(5)` que
+push/shift cada vez que el bus se mueve.
+
+---
+
+#### Checklist de QA visual para el pitch
+
+Antes del pitch, valida estos en device real iPhone:
+
+- [ ] Tap en bus abre el modal con spring physics (sube con rebote suave)
+- [ ] Otros buses se atenúan (opacity 0.35) con stagger
+- [ ] El bus seleccionado tiene halo pulsante en color de la ruta
+- [ ] El polyline se dibuja desde inicio hasta fin (~0.8s)
+- [ ] El ETA del modal cuenta hacia abajo (segundo a segundo)
+- [ ] El ETA cambia de color cuando <30s (accent naranja con pulse)
+- [ ] El bus rota según hacia dónde va (no apunta siempre al norte)
+- [ ] Botón "Avísame" se transforma en checkmark verde tras click
+- [ ] Cerrar modal: polyline fade out + buses regresan a opacidad normal
+- [ ] Todo se ve bien a 393px (iPhone) sin scroll horizontal
+
 ### Sesión típica
 
 1. Abres Cursor/Claude con este doc adjunto + el repo del frontend abierto.
