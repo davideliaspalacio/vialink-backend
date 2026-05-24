@@ -2852,7 +2852,330 @@ describe.skip('smoke prod (manual)', () => {
 
 ---
 
-## Apéndice A: Workflow recomendado con agente IA
+## 12. Geocoding — buscador de direcciones libres
+
+Esta sección cubre la integración del endpoint `GET /api/v1/geocode` que
+convierte direcciones libres (ej. *"Calle 84 con Cra 50"*) a coordenadas,
+usando Mapbox internamente. Se agrega a la app un buscador en el mapa
+principal que permite al usuario escribir una dirección y ver sugerencias
+en tiempo real.
+
+El backend ya normaliza el formato colombiano (`Calle X con Cra Y` →
+`Calle X Carrera Y, Barranquilla`), expande abreviaturas (`Cra → Carrera`)
+y maneja el símbolo `#`. El frontend no tiene que hacer ningún massage de
+la query — basta con pasarla tal cual.
+
+### 12.1 Contrato del endpoint
+
+```
+GET /api/v1/geocode?q=<texto>&lat=<num>&lng=<num>&limit=<int>
+```
+
+- `q` (required, 2-120 chars) — texto libre de la dirección
+- `lat`, `lng` (opcional) — proximidad para sesgar resultados
+- `limit` (opcional, default 5, max 10)
+
+Endpoint **público** (no requiere Bearer).
+
+**200 OK:**
+```json
+{
+  "query": "Calle 84 con Cra 50",
+  "results": [{
+    "formatted_address": "Carrera 50 84 197, 080020 Barranquilla, Atlántico, Colombia",
+    "location": { "lat": 11.0047, "lng": -74.8198 },
+    "category": "address",
+    "relevance": 0.8,
+    "source": "mapbox" | "cache"
+  }],
+  "cached": false,
+  "latency_ms": 380
+}
+```
+
+**Errores:**
+- `400` query vacía
+- `404` ninguna sugerencia
+- `502` Mapbox upstream error
+- `503` token Mapbox no configurado (el frontend debe manejarlo
+  silenciosamente — devolver `[]` y mostrar "Buscando…")
+
+### 12.2 Tipo backend en `src/types/backend.ts`
+
+```ts
+export interface BackendGeocodeResult {
+  formatted_address: string;
+  location: { lat: number; lng: number };
+  category: 'address' | 'street' | 'place' | 'poi'
+    | 'neighborhood' | 'locality' | null;
+  relevance: number;
+  source: 'mapbox' | 'cache';
+}
+
+export interface BackendGeocodeResponse {
+  query: string;
+  results: BackendGeocodeResult[];
+  cached: boolean;
+  latency_ms: number;
+}
+```
+
+### 12.3 Tipo producto en `src/types/index.ts`
+
+```ts
+export type GeocodeSuggestion = {
+  /** Hash corto del formatted_address — útil como key en React */
+  id: string;
+  /** Texto corto para el item del dropdown */
+  label: string;
+  /** Dirección completa "Calle X, Barrio, Ciudad, ..." */
+  fullAddress: string;
+  location: LatLng;
+  category: string | null;
+};
+```
+
+### 12.4 Mapper en `src/lib/mappers.ts`
+
+```ts
+export function backendGeocodeResultToSuggestion(
+  r: BackendGeocodeResult,
+): GeocodeSuggestion {
+  return {
+    id: btoa(r.formatted_address).slice(0, 16),
+    label: r.formatted_address.split(',').slice(0, 2).join(',').trim(),
+    fullAddress: r.formatted_address,
+    location: r.location,
+    category: r.category,
+  };
+}
+```
+
+**Test (TDD primero):**
+```ts
+it('acorta el label a las primeras 2 partes de la direccion', () => {
+  const s = backendGeocodeResultToSuggestion({
+    formatted_address: 'Calle 84 #50-12, Norte, Barranquilla, Atlántico, Colombia',
+    location: { lat: 11, lng: -74 },
+    category: 'address',
+    relevance: 1,
+    source: 'mapbox',
+  });
+  expect(s.label).toBe('Calle 84 #50-12, Norte');
+  expect(s.location.lat).toBe(11);
+});
+```
+
+### 12.5 Método en `src/lib/dataSource.ts`
+
+```ts
+async geocode(
+  query: string,
+  proximity?: LatLng,
+  limit = 5,
+): Promise<GeocodeSuggestion[]> {
+  if (USE_MOCKS) {
+    // Mock: filtrar paraderosMock por nombre
+    const q = query.toLowerCase();
+    return paraderosMock
+      .filter((p) => p.nombre.toLowerCase().includes(q))
+      .slice(0, limit)
+      .map((p) => ({
+        id: p.id,
+        label: p.nombre,
+        fullAddress: p.direccion,
+        location: { lat: p.lat, lng: p.lng },
+        category: 'place' as const,
+      }));
+  }
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  if (proximity) {
+    params.set('lat', proximity.lat.toString());
+    params.set('lng', proximity.lng.toString());
+  }
+  try {
+    const raw = await api.get<BackendGeocodeResponse>(`/geocode?${params}`);
+    return raw.results.map(backendGeocodeResultToSuggestion);
+  } catch (err) {
+    // 503 (sin token Mapbox), 502 (Mapbox upstream), 404 (sin matches)
+    // → caer silenciosamente a [] para no romper la UX
+    if (err instanceof ApiError &&
+        (err.status === 503 || err.status === 502 || err.status === 404)) {
+      return [];
+    }
+    throw err;
+  }
+},
+```
+
+### 12.6 Hook con debounce en `src/hooks/useGeocode.ts`
+
+```ts
+import { useQuery } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { dataSource } from '../lib/dataSource';
+import type { LatLng } from '../types';
+
+function useDebounced<T>(value: T, ms = 350): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return debounced;
+}
+
+export function useGeocode(query: string, proximity?: LatLng) {
+  const debouncedQuery = useDebounced(query, 350);
+  const enabled = debouncedQuery.trim().length >= 3;
+  return useQuery({
+    queryKey: ['geocode', debouncedQuery, proximity?.lat, proximity?.lng],
+    queryFn: () => dataSource.geocode(debouncedQuery, proximity, 5),
+    enabled,
+    staleTime: 60 * 60_000,
+    gcTime: 60 * 60_000,
+  });
+}
+```
+
+**Tests:**
+```ts
+it('no consulta si query < 3 chars', () => {
+  const { result } = renderHook(() => useGeocode('ab'), { wrapper });
+  expect(result.current.fetchStatus).toBe('idle');
+});
+
+it('devuelve sugerencias para query >= 3 chars', async () => {
+  const { result } = renderHook(() => useGeocode('Uninorte'), { wrapper });
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  expect(result.current.data?.length).toBeGreaterThan(0);
+});
+```
+
+### 12.7 Componente `src/components/ui/AddressSearchBar.tsx`
+
+```tsx
+import { useState } from 'react';
+import { useGeocode } from '../../hooks/useGeocode';
+import type { GeocodeSuggestion, LatLng } from '../../types';
+
+type Props = {
+  proximity?: LatLng;
+  onSelect: (s: GeocodeSuggestion) => void;
+  placeholder?: string;
+};
+
+export default function AddressSearchBar({ proximity, onSelect, placeholder }: Props) {
+  const [q, setQ] = useState('');
+  const [focused, setFocused] = useState(false);
+  const { data: suggestions, isFetching } = useGeocode(q, proximity);
+  const open = focused && (q.length >= 3 || (suggestions?.length ?? 0) > 0);
+
+  return (
+    <div className="relative w-full">
+      <input
+        type="text" value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
+        placeholder={placeholder ?? '¿A dónde vas?'}
+        className="w-full px-4 py-3 rounded-card bg-surface-base border
+                   border-text-secondary/20 text-text-primary"
+        data-testid="address-search-input"
+      />
+      {open && (
+        <ul className="absolute top-full left-0 right-0 mt-1 bg-surface-base
+                       rounded-card shadow-lg max-h-64 overflow-y-auto z-50">
+          {isFetching && (
+            <li className="px-4 py-3 text-text-secondary text-sm">Buscando…</li>
+          )}
+          {!isFetching && suggestions?.length === 0 && q.length >= 3 && (
+            <li className="px-4 py-3 text-text-secondary text-sm">
+              No encontramos esa dirección
+            </li>
+          )}
+          {suggestions?.map((s) => (
+            <li key={s.id}>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { onSelect(s); setQ(s.label); setFocused(false); }}
+                className="w-full text-left px-4 py-3 hover:bg-surface-raised
+                           border-b border-text-secondary/10"
+                data-testid="address-suggestion"
+              >
+                <div className="font-medium text-text-primary">{s.label}</div>
+                <div className="text-xs text-text-secondary truncate">{s.fullAddress}</div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+```
+
+### 12.8 Integración en `src/pages/MapaPage.tsx`
+
+```tsx
+// Reutiliza el state `setTapped` que ya dispara POST /buses-at-point
+// (ver sección 6.1). Agrega encima del MapView un buscador flotante:
+
+<div className="absolute top-4 left-4 right-4 z-30">
+  <AddressSearchBar
+    proximity={userLocation ?? undefined}
+    onSelect={(s) => {
+      setTapped(s.location); // dispara el bottom sheet con buses-at-point
+      // Opcional: mapRef.current?.flyTo([s.location.lat, s.location.lng], 16);
+    }}
+  />
+</div>
+```
+
+### 12.9 MSW handler en `src/lib/mockHandlers.ts`
+
+```ts
+http.get(`${BASE}/geocode`, ({ request }) => {
+  const url = new URL(request.url);
+  const q = url.searchParams.get('q') ?? '';
+  return HttpResponse.json<BackendGeocodeResponse>({
+    query: q,
+    results: [{
+      formatted_address: `${q}, Barranquilla, Atlántico, Colombia`,
+      location: { lat: 11.018, lng: -74.85 },
+      category: 'address',
+      relevance: 0.9,
+      source: 'mapbox',
+    }],
+    cached: false,
+    latency_ms: 50,
+  });
+}),
+```
+
+### 12.10 Integración con el asistente Claude (sin cambios en frontend)
+
+El asistente del backend ya integra `geocode_address` internamente. Si el
+usuario pregunta al chat *"¿Cómo llego a la Calle 84 con Cra 50?"*, Claude
+cadena `find_landmark` (origen) + `geocode_address` (destino) + `calculate_trip`
+y devuelve la respuesta natural + `suggested_action`. **El frontend no tiene
+que llamar `/geocode` por su cuenta para esto** — solo seguir consumiendo
+`POST /assistant/ask` como ya hace.
+
+### 12.11 Limitaciones conocidas
+
+| Tipo de query | ¿Funciona? | Por qué |
+|---|---|---|
+| Direcciones formales BAQ (`Calle X con Cra Y`, `Calle X #N-M`) | ✅ Sí | Mapbox v6 indexa el dataset oficial |
+| Avenidas con nombre (`Avenida Olaya Herrera`) | ⚠️ A veces | Mapbox no tiene todas las avenidas tagged |
+| POIs (`Uninorte`, `Estadio Metropolitano`, `Buenavista`) | ❌ No | Mapbox no indexa POIs de BAQ en su free tier. **Usa `find_landmark` para esto** (los 80 landmarks pre-cargados del backend cubren esto) |
+| Esquinas referenciadas | ⚠️ Mediocre | Mapbox interpola pero la precisión cae a 1-2 cuadras |
+
+**Regla pragmática:** el buscador debe combinar `useGeocode` (Mapbox)
+con `useLandmarkSearch` (los 80 nuestros). Si los dos devuelven, fusiona
+los resultados en una sola lista priorizando los landmarks (son más
+relevantes para Vialink).
 
 ### Sesión típica
 
@@ -2881,7 +3204,7 @@ describe.skip('smoke prod (manual)', () => {
 
 | Pantalla | REST endpoints | WS rooms | Eventos relevantes |
 |---|---|---|---|
-| **Mapa principal** | `GET /landmarks/nearby`, `POST /buses-at-point`, `GET /routes/:id/buses` | `city:BAQ` | `bus_position`, `incident_reported` |
+| **Mapa principal** | `GET /landmarks/nearby`, `POST /buses-at-point`, `GET /routes/:id/buses`, **`GET /geocode`** (buscador) | `city:BAQ` | `bus_position`, `incident_reported` |
 | **Detalle paradero** | `GET /landmarks/:id`, `POST /buses-at-point` | `city:BAQ` | `bus_position` |
 | **Asistente IA** | `POST /assistant/ask`, `GET /assistant/messages` | — | — |
 | **Viaje activo** | `POST /trips`, `GET /trips/active`, `PATCH /trips/:id`, `POST /trips/:id/rating`, `GET /routes/:id/corridor.geojson` | `trip:<id>` | `trip_update`, `bus_position` |
@@ -2889,6 +3212,7 @@ describe.skip('smoke prod (manual)', () => {
 | **Admin (pitch)** | `GET /admin/metrics`, `GET /admin/feed`, `POST /admin/simulator/start` | `admin` | TODOS |
 | **Auth + perfil** | `POST /auth/signup`, `POST /auth/login`, `POST /auth/refresh`, `GET /me`, `POST/DELETE /me/favorites` | — | — |
 | **Incidentes** | `POST /incidents`, `GET /incidents/nearby` | `city:BAQ` | `incident_reported` |
+| **Geocoding** | **`GET /geocode`** (público) | — | — |
 
 ---
 
