@@ -54,6 +54,16 @@ interface PolylinePointRow {
   lng: number;
 }
 
+/** Row de candidato ya enriquecido con bus + tiempos calculados. */
+interface EnrichedCandidate {
+  candidate: CandidateRow;
+  bus: BusOnRouteRow;
+  waitSeconds: number;
+  rideSeconds: number;
+  totalSeconds: number;
+  rankScore: number;
+}
+
 export interface RouteRecommendation {
   rank: number;
   total_minutes: number;
@@ -102,14 +112,48 @@ export class RoutingService {
   }> {
     const start = Date.now();
 
-    // Step 1: SQL composite — encuentra todos los triples (board, route, alight)
-    // viables. Cada fila tiene la info del paradero de abordaje, la ruta, y el
-    // mejor paradero de descenso sobre esa misma ruta cerca del destino.
-    const candidates = await this.findCandidates(params);
+    // Step 1+2: Búsqueda progresiva — el user pide maxWalkingM (típico
+    // 700m), pero si esa zona es esparza y obtenemos < 2 viables,
+    // ampliamos el radio internamente hasta 1800m. Garantiza que el
+    // sheet siempre tenga al menos 2 opciones para el carousel + el
+    // AlternativeRoutesLayer del frontend.
+    //
+    // Se intenta el radio pedido primero. Si después de enrichment
+    // (que ya filtra candidatos sin bus disponible) hay < 2, se
+    // reintenta con el siguiente step. Para de iterar al primer step
+    // que dé ≥2 viables o al agotar la lista.
+    const radiusSteps = Array.from(
+      new Set([
+        params.maxWalkingM,
+        Math.max(1000, Math.round(params.maxWalkingM * 1.5)),
+        1500,
+        1800,
+      ]),
+    ).sort((a, b) => a - b);
+
+    let candidates: CandidateRow[] = [];
+    let enriched: EnrichedCandidate[] = [];
+    let usedRadius = params.maxWalkingM;
+
+    for (const radius of radiusSteps) {
+      candidates = await this.findCandidates({
+        ...params,
+        maxWalkingM: radius,
+      });
+      enriched = await this.enrichCandidates(candidates);
+      usedRadius = radius;
+      if (enriched.length >= 2) break;
+    }
+
+    if (usedRadius > params.maxWalkingM) {
+      this.logger.log(
+        `Widened radius ${params.maxWalkingM}m → ${usedRadius}m to find ≥2 alts (got ${enriched.length})`,
+      );
+    }
 
     if (candidates.length === 0) {
       this.logger.log(
-        `No candidates found within ${params.maxWalkingM}m of user/dest`,
+        `No candidates found within ${usedRadius}m of user/dest`,
       );
       return {
         user_location: params.userLocation,
@@ -117,67 +161,6 @@ export class RoutingService {
         recommendations: [],
         generated_at: new Date().toISOString(),
       };
-    }
-
-    // Step 2: para cada candidato, busca el siguiente bus que llega al paradero
-    // de abordaje. Computa wait + ride. Aborta candidatos sin bus disponible.
-    const enriched: Array<{
-      candidate: CandidateRow;
-      bus: BusOnRouteRow;
-      waitSeconds: number;
-      rideSeconds: number;
-      totalSeconds: number;
-      /**
-       * Score de ranking: igual a totalSeconds pero con un PENALTY
-       * extra sobre el wait time. La espera se percibe psicológicamente
-       * mucho peor que el viaje en bus (el user está parado, no avanza).
-       * Multiplicar wait × 1.5 hace que el algoritmo prefiera rutas
-       * donde el bus está más cerca aunque el viaje en bus sea más largo.
-       * El user NO ve este número, solo lo usa para ordenar.
-       */
-      rankScore: number;
-    }> = [];
-
-    /** Factor de penalización del wait time en el ranking. 1.5 = 50% extra
-     *  peso al wait. Si el bus está a 23 min, el ranking lo trata como 34 min
-     *  efectivos, lo cual baja drásticamente las opciones con buses lejanos. */
-    const WAIT_PENALTY = 1.5;
-
-    for (const c of candidates) {
-      const bus = await this.findNextBus(c.route_id, c.board_fraction);
-      if (!bus) continue;
-
-      const waitSeconds = this.computeBusEtaToBoard(bus, c);
-      const rideSeconds = this.computeRideSeconds(bus.speed_kmh, c);
-      const walkToBoardSec = Math.ceil(
-        (c.walk_to_board_m / WALK_SPEED_M_PER_MIN) * 60,
-      );
-      const walkFromAlightSec = Math.ceil(
-        (c.walk_from_alight_m / WALK_SPEED_M_PER_MIN) * 60,
-      );
-
-      // Si el bus llega ANTES de que el user pueda caminar al paradero, el
-      // bus se va sin él. Sumamos al menos walkToBoardSec como floor del wait.
-      const effectiveWaitSec = Math.max(waitSeconds, walkToBoardSec);
-
-      const totalSec =
-        walkToBoardSec + effectiveWaitSec + rideSeconds + walkFromAlightSec;
-
-      // Score de ranking con penalty al wait
-      const rankScore =
-        walkToBoardSec +
-        effectiveWaitSec * WAIT_PENALTY +
-        rideSeconds +
-        walkFromAlightSec;
-
-      enriched.push({
-        candidate: c,
-        bus,
-        waitSeconds: effectiveWaitSec - walkToBoardSec, // wait NETO desde que llegó
-        rideSeconds,
-        totalSeconds: totalSec,
-        rankScore,
-      });
     }
 
     if (enriched.length === 0) {
@@ -254,6 +237,60 @@ export class RoutingService {
   }
 
   // -------- Internals --------
+
+  /**
+   * Para cada candidato (board, route, alight) busca el siguiente bus
+   * que llega al paradero de abordaje y computa wait + ride + scoring.
+   *
+   * Aborta candidatos sin bus disponible (la ruta existe en BD pero
+   * no hay bus IN_SERVICE convenientemente upstream del paradero).
+   *
+   * rankScore = walkToBoard + (wait × 1.5) + ride + walkFromAlight.
+   * El factor 1.5 al wait refleja que la espera se percibe peor
+   * psicológicamente que viajar — el algoritmo prefiere buses cercanos.
+   */
+  private async enrichCandidates(
+    candidates: CandidateRow[],
+  ): Promise<EnrichedCandidate[]> {
+    /** Factor de penalización del wait time. 1.5 = 50% extra peso. */
+    const WAIT_PENALTY = 1.5;
+    const enriched: EnrichedCandidate[] = [];
+
+    for (const c of candidates) {
+      const bus = await this.findNextBus(c.route_id, c.board_fraction);
+      if (!bus) continue;
+
+      const waitSeconds = this.computeBusEtaToBoard(bus, c);
+      const rideSeconds = this.computeRideSeconds(bus.speed_kmh, c);
+      const walkToBoardSec = Math.ceil(
+        (c.walk_to_board_m / WALK_SPEED_M_PER_MIN) * 60,
+      );
+      const walkFromAlightSec = Math.ceil(
+        (c.walk_from_alight_m / WALK_SPEED_M_PER_MIN) * 60,
+      );
+      // Si el bus llega ANTES de que el user pueda caminar al paradero,
+      // el bus se va sin él. Floor del wait = walk_to_board_sec.
+      const effectiveWaitSec = Math.max(waitSeconds, walkToBoardSec);
+      const totalSec =
+        walkToBoardSec + effectiveWaitSec + rideSeconds + walkFromAlightSec;
+      const rankScore =
+        walkToBoardSec +
+        effectiveWaitSec * WAIT_PENALTY +
+        rideSeconds +
+        walkFromAlightSec;
+
+      enriched.push({
+        candidate: c,
+        bus,
+        waitSeconds: effectiveWaitSec - walkToBoardSec, // NETO desde llegada
+        rideSeconds,
+        totalSeconds: totalSec,
+        rankScore,
+      });
+    }
+
+    return enriched;
+  }
 
   private async findCandidates(params: {
     userLocation: LatLng;
