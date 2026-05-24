@@ -127,7 +127,21 @@ export class RoutingService {
       waitSeconds: number;
       rideSeconds: number;
       totalSeconds: number;
+      /**
+       * Score de ranking: igual a totalSeconds pero con un PENALTY
+       * extra sobre el wait time. La espera se percibe psicológicamente
+       * mucho peor que el viaje en bus (el user está parado, no avanza).
+       * Multiplicar wait × 1.5 hace que el algoritmo prefiera rutas
+       * donde el bus está más cerca aunque el viaje en bus sea más largo.
+       * El user NO ve este número, solo lo usa para ordenar.
+       */
+      rankScore: number;
     }> = [];
+
+    /** Factor de penalización del wait time en el ranking. 1.5 = 50% extra
+     *  peso al wait. Si el bus está a 23 min, el ranking lo trata como 34 min
+     *  efectivos, lo cual baja drásticamente las opciones con buses lejanos. */
+    const WAIT_PENALTY = 1.5;
 
     for (const c of candidates) {
       const bus = await this.findNextBus(c.route_id, c.board_fraction);
@@ -149,12 +163,20 @@ export class RoutingService {
       const totalSec =
         walkToBoardSec + effectiveWaitSec + rideSeconds + walkFromAlightSec;
 
+      // Score de ranking con penalty al wait
+      const rankScore =
+        walkToBoardSec +
+        effectiveWaitSec * WAIT_PENALTY +
+        rideSeconds +
+        walkFromAlightSec;
+
       enriched.push({
         candidate: c,
         bus,
         waitSeconds: effectiveWaitSec - walkToBoardSec, // wait NETO desde que llegó
         rideSeconds,
         totalSeconds: totalSec,
+        rankScore,
       });
     }
 
@@ -170,9 +192,10 @@ export class RoutingService {
       };
     }
 
-    // Step 3: rank por totalSeconds, dedup por route_id (si una misma ruta
-    // aparece con dos paraderos cercanos, quédate con el mejor), tomar top N.
-    enriched.sort((a, b) => a.totalSeconds - b.totalSeconds);
+    // Step 3: rank por rankScore (totalSec + penalty al wait), dedup por
+    // route_id, tomar top N. El user ve total_minutes "honesto" en cada
+    // recomendación pero el orden refleja el costo psicológico real.
+    enriched.sort((a, b) => a.rankScore - b.rankScore);
     const seenRoutes = new Set<string>();
     const top: typeof enriched = [];
     for (const e of enriched) {
