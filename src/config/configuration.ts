@@ -42,9 +42,11 @@ const envSchema = z.object({
   SIMULATOR_DEFAULT_AGENTS: z.coerce.number().int().positive().default(500),
   SIMULATOR_LLM_PROBABILITY: z.coerce.number().min(0).max(1).default(0.1),
   SIMULATOR_TICK_MS: z.coerce.number().int().positive().default(1000),
-  // 500ms = 2 updates/sec por bus → CSS transition matched en el frontend
-  // hace que el movimiento se vea continuo. Subir solo si hay >100 buses.
-  SIMULATOR_BUS_TICK_MS: z.coerce.number().int().positive().default(500),
+  // Default 1000ms = razonable para prod (Railway hobby plan).
+  // En LOCAL bajamos a 250ms vía .env para movimiento ultra-smooth
+  // aprovechando los 96GB RAM. NO subir esto en Railway sin pensar:
+  // 250ms × 34 buses = 136 WS frames/sec hacia cada client conectado.
+  SIMULATOR_BUS_TICK_MS: z.coerce.number().int().positive().default(1000),
   /**
    * Time-acceleration factor for the simulator. 1.0 = real time
    * (a walk of 800m takes 10 minutes). For the pitch use 10-20x so
