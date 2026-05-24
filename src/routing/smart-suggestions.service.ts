@@ -23,6 +23,7 @@ export interface SmartSuggestion {
     | 'alternative_faster'
     | 'alternative_less_walking'
     | 'alternative_transmetro'
+    | 'alternative_similar'
     | 'arrive_just_in_time';
   /** Texto en lenguaje natural mostrado al user */
   text: string;
@@ -132,6 +133,23 @@ export class SmartSuggestionsService {
           ),
         });
       }
+
+      // Heurística 4: fallback generoso — alternativa razonable.
+      // Subimos el umbral a 15 min de gap para garantizar que el user
+      // siempre vea alternativas relevantes, incluso si son un poco
+      // más lentas. Mejor mostrar opciones que dejar el banner vacío.
+      if (
+        alt.total_minutes - primary.total_minutes <= 15 &&
+        alt.total_minutes - primary.total_minutes >= 0 &&
+        altRank === 2 // solo la mejor alternativa, no todas
+      ) {
+        drafts.push({
+          type: 'alternative_similar',
+          alternative_rank: altRank,
+          savings_minutes: 0,
+          tradeoff_minutes: alt.total_minutes - primary.total_minutes,
+        });
+      }
     }
 
     // Dedup por tipo: máximo 1 sugerencia por tipo (la mejor)
@@ -234,6 +252,9 @@ export class SmartSuggestionsService {
         break;
       case 'alternative_transmetro':
         text = `Si preferís Transmetro, ${altName} también te lleva.`;
+        break;
+      case 'alternative_similar':
+        text = `También podés tomar ${altName} y llegás casi al mismo tiempo.`;
         break;
       case 'arrive_just_in_time':
         text = `Tomá ${altName} y llegás justo a tiempo.`;
