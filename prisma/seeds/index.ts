@@ -234,9 +234,11 @@ async function main() {
     const { id: routeId, lengthM } = await seedRoute(route, cityId);
     const rlCount = await seedRouteLandmarks(routeId, cityId);
     const fsCount = await seedFixedStops(route, routeId);
-    // Densidad reducida para demo (75% menos vs 8/5).
-    // BRT (Transmetro) sigue con más buses porque son rutas troncales largas.
-    const busCount = route.mode === 'BRT' ? 2 : 1;
+    // Densidad para demo: 2 buses por ruta TRADITIONAL (uno en cada
+    // sentido del corridor, garantiza siempre hay un bus cerca de cada
+    // paradero en ambas direcciones) + 3 BRT (rutas troncales más largas).
+    // Total: ~32 buses (vs 86 original = -63% sin comprometer ETAs).
+    const busCount = route.mode === 'BRT' ? 3 : 2;
     const buses = await seedBuses(route, routeId, busCount);
 
     totalRoutes++;

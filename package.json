@@ -28,6 +28,7 @@
     "snap-corridors": "ts-node scripts/snap-corridors-to-roads.ts",
     "refine-corridors": "ts-node scripts/refine-corridors-recursive.ts",
     "reduce-buses": "ts-node scripts/reduce-buses.ts",
+    "top-up-buses": "ts-node scripts/top-up-buses.ts",
     "diag-buses": "ts-node scripts/diag-buses.ts"
   },
   "dependencies": {
