@@ -31,6 +31,18 @@ export type SuggestedAction =
   | {
       type: 'OPEN_WAIT_PIN';
       payload: { location: LatLng; route_id?: string };
+    }
+  /**
+   * Cuando el user preguntó "cómo llego a X". El frontend setea X como
+   * destination → abre RouteRecommendationSheet + dibuja todo en mapa
+   * (la mejor experiencia, equivalente a buscar X en el AddressSearchBar).
+   */
+  | {
+      type: 'OPEN_ROUTE_RECOMMENDATION';
+      payload: {
+        destination: LatLng;
+        destination_label?: string;
+      };
     };
 
 interface ToolCallSummary {
@@ -50,17 +62,20 @@ Reglas:
 5. Una vez tengas coordenadas (de landmark o geocode), usa calculate_trip para encontrar la mejor ruta.
 6. Si pregunta cuándo viene el bus en su ubicación, usa get_buses_at_point con su ubicación.
 7. Si te falta la ubicación del usuario y la necesitas, pregúntale.
-8. NOMENCLATURA DE RUTAS — REGLA CRÍTICA:
-   - SIEMPRE usá el NOMBRE descriptivo de la ruta cuando le hables al usuario.
-     Ejemplos: "Sabanilla - Centro", "Centro - Uninorte", "Las Flores - Centro".
-   - NUNCA digas solo el código técnico ("C12", "S12", "T1") en tu respuesta —
-     el usuario común no sabe qué significa.
-   - Si querés agregar el código entre paréntesis para claridad, OK:
-     "la ruta Sabanilla - Centro (S12)" ✓
-   - Si la ruta es Transmetro (mode = BRT), mencionalo:
-     "el Transmetro Soledad - Centro" en vez de "T1".
-   - Si es tradicional, decí "el bus de Sabanilla - Centro" o "la ruta
-     Sabanilla - Centro".
+8. NOMENCLATURA DE RUTAS — REGLA ABSOLUTA, NO NEGOCIABLE:
+   - Las tools devuelven un campo `route_display` con el nombre que SÍ podés
+     usar. EJEMPLO de uso: "te lleva la ruta Sabanilla - Centro" (donde
+     'Sabanilla - Centro' vino de route_display).
+   - PROHIBIDO mencionar route_code en TU RESPUESTA AL USUARIO. NUNCA digas
+     ni escribas "C12", "S12", "T1", "T2", "A2", "B7", ni cualquier otro
+     código tipo letra+número. Son jerga interna, el usuario común no
+     entiende qué significan.
+   - Mal ❌: "La ruta C12 te lleva directo"
+   - Mal ❌: "Toma la S12, llega en 4 min"
+   - Bien ✓: "La ruta Sabanilla - Centro te lleva directo"
+   - Bien ✓: "Toma el bus de Centro - Uninorte, llega en 4 min"
+   - Si querés especificar el tipo: "el bus tradicional de X" o
+     "el Transmetro X" (cuando sea BRT).
 9. Cuando recomiendes una ruta, decí: nombre descriptivo + tiempo total
    + alternativas si las hay. Ejemplo: "Te recomiendo el bus Sabanilla -
    Centro, llega en 4 min y demora ~19 min total. También podés tomar
@@ -253,20 +268,22 @@ export class AssistantService {
     const last = toolCalls[toolCalls.length - 1];
     if (!last) return null;
 
-    // calculate_trip → suggest START_TRIP with the best option
+    // calculate_trip → OPEN_ROUTE_RECOMMENDATION con el destino.
+    // El frontend setea destination = (to_lat, to_lng), abre el
+    // RouteRecommendationSheet y dibuja todo en mapa, EXACTAMENTE igual
+    // que si el user hubiera buscado ese destino en el AddressSearchBar.
+    // (Antes esto devolvía OPEN_WAIT_PIN, que solo creaba un pin sin
+    //  mostrar la ruta — confuso para el user.)
     if (last.name === 'calculate_trip') {
-      // We could re-execute or store last result; here we use a simpler signal:
-      // if the user asked "cómo llego" semantically, offer START_TRIP via the route
-      // mentioned in the answer text. We extract the route code (e.g., "C12") from
-      // the answer.
-      const codeMatch = answer.match(/\b([A-Z]\d{1,2})\b/);
-      if (codeMatch && params.location) {
-        // We don't have route_id without re-querying; leave generic SHOW_ROUTE-by-code
-        // and let frontend do a final lookup, OR provide OPEN_WAIT_PIN.
+      const input = last.input as { to_lat?: number; to_lng?: number };
+      if (
+        typeof input.to_lat === 'number' &&
+        typeof input.to_lng === 'number'
+      ) {
         return {
-          type: 'OPEN_WAIT_PIN',
+          type: 'OPEN_ROUTE_RECOMMENDATION',
           payload: {
-            location: params.location,
+            destination: { lat: input.to_lat, lng: input.to_lng },
           },
         };
       }

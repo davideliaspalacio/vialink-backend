@@ -68,8 +68,11 @@ export class AssistantToolsService {
     return {
       routes: result.routes.map((r) => ({
         route_id: r.route.id,
-        route_code: r.route.code,
+        // route_display es el campo que el LLM DEBE usar al hablar con
+        // el user. route_code es solo identificador interno.
+        route_display: r.route.name,
         route_name: r.route.name,
+        route_code: r.route.code,
         next_bus: r.next_buses[0]
           ? {
               bus_id: r.next_buses[0].bus_id,
@@ -152,8 +155,11 @@ export class AssistantToolsService {
 
       options.push({
         route_id: r.id,
-        route_code: r.code,
+        // route_display es el campo "user-facing" que el LLM debe usar.
+        // route_code queda solo para referencia interna.
+        route_display: r.name,
         route_name: r.name,
+        route_code: r.code,
         wait_seconds: nextBusEta,
         in_bus_seconds: inBusSec,
         total_seconds: totalSec,
