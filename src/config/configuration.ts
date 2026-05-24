@@ -42,7 +42,9 @@ const envSchema = z.object({
   SIMULATOR_DEFAULT_AGENTS: z.coerce.number().int().positive().default(500),
   SIMULATOR_LLM_PROBABILITY: z.coerce.number().min(0).max(1).default(0.1),
   SIMULATOR_TICK_MS: z.coerce.number().int().positive().default(1000),
-  SIMULATOR_BUS_TICK_MS: z.coerce.number().int().positive().default(3000),
+  // 500ms = 2 updates/sec por bus → CSS transition matched en el frontend
+  // hace que el movimiento se vea continuo. Subir solo si hay >100 buses.
+  SIMULATOR_BUS_TICK_MS: z.coerce.number().int().positive().default(500),
   /**
    * Time-acceleration factor for the simulator. 1.0 = real time
    * (a walk of 800m takes 10 minutes). For the pitch use 10-20x so
