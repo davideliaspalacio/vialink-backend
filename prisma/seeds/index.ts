@@ -238,7 +238,9 @@ async function main() {
     // sentido del corridor, garantiza siempre hay un bus cerca de cada
     // paradero en ambas direcciones) + 3 BRT (rutas troncales más largas).
     // Total: ~32 buses (vs 86 original = -63% sin comprometer ETAs).
-    const busCount = route.mode === 'BRT' ? 3 : 2;
+    // Densidad demo (~52 buses total): 3 por TRADITIONAL, 5 por BRT.
+    // Mayor probabilidad de bus cercano = ETAs más cortos = mejor UX.
+    const busCount = route.mode === 'BRT' ? 5 : 3;
     const buses = await seedBuses(route, routeId, busCount);
 
     totalRoutes++;
