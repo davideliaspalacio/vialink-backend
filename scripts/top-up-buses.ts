@@ -34,8 +34,10 @@ const prisma = new PrismaClient({
   datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
 });
 
-const TARGET_BRT = 3;
-const TARGET_TRAD = 2;
+// Densidad aumentada ~50% (de 34 → 52) para mayor probabilidad de
+// que cualquier user tenga un bus cerca cuando pide una ruta.
+const TARGET_BRT = 5;
+const TARGET_TRAD = 3;
 
 interface RouteRow {
   id: string;

@@ -3,6 +3,7 @@ import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../common/decorators/public.decorator';
 import { RecommendRouteDto, WalkDirectionsDto } from './routing.dto';
 import { RoutingService } from './routing.service';
+import { SmartSuggestionsService } from './smart-suggestions.service';
 import { WalkingService } from './walking.service';
 
 @ApiTags('routing')
@@ -11,6 +12,7 @@ export class RoutingController {
   constructor(
     private readonly routing: RoutingService,
     private readonly walking: WalkingService,
+    private readonly smartSuggestions: SmartSuggestionsService,
   ) {}
 
   @Public()
@@ -37,6 +39,36 @@ export class RoutingController {
       maxWalkingM: body.max_walking_m ?? 500,
       maxAlternatives: body.max_alternatives ?? 3,
     });
+  }
+
+  @Public()
+  @Post('recommend-smart')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      '🧠 Recomendación de ruta + sugerencias smart vía IA (heurísticas + LLM)',
+    description:
+      'Igual que /routing/recommend pero adicionalmente devuelve un array `smart_suggestions` con recomendaciones contextuales que el motor IA detectó. Ejemplos:\n\n' +
+      '  - "Si esperás 3 min más, podés tomar Sabanilla - Centro que llega 5 min antes"\n' +
+      '  - "También podés caminar 2 cuadras menos si tomás Centro - Uninorte"\n' +
+      '  - "El Transmetro Soledad - Centro también te lleva y es más rápido"\n\n' +
+      'Las sugerencias usan heurísticas determinísticas (alternativa más rápida, menos caminata, BRT vs tradicional) y solo invocan al LLM (Claude Haiku) para reescribir el texto en español natural. ~$0.002 por request.',
+  })
+  @ApiBody({ type: RecommendRouteDto })
+  async recommendSmart(@Body() body: RecommendRouteDto) {
+    const base = await this.routing.recommend({
+      userLocation: body.user_location,
+      destination: body.destination,
+      maxWalkingM: body.max_walking_m ?? 500,
+      maxAlternatives: body.max_alternatives ?? 3,
+    });
+    const smartSuggestions = await this.smartSuggestions.generate(
+      base.recommendations,
+    );
+    return {
+      ...base,
+      smart_suggestions: smartSuggestions,
+    };
   }
 
   @Public()
