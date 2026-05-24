@@ -1,0 +1,26 @@
+{
+  "name": "vialink-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing Vialink transport data (rutas, buses, paraderos, routing) for AI clients like Claude Desktop",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "start:http": "node dist/server.js --http"
+  },
+  "bin": {
+    "vialink-mcp": "dist/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
