@@ -3,6 +3,18 @@ import { Type } from 'class-transformer';
 import { IsInt, IsOptional, Max, Min, ValidateNested } from 'class-validator';
 import { LocationDto } from '../common/dto/location.dto';
 
+export class WalkDirectionsDto {
+  @ApiProperty({ type: () => LocationDto, description: 'Punto de origen' })
+  @ValidateNested()
+  @Type(() => LocationDto)
+  from!: LocationDto;
+
+  @ApiProperty({ type: () => LocationDto, description: 'Punto de destino' })
+  @ValidateNested()
+  @Type(() => LocationDto)
+  to!: LocationDto;
+}
+
 export class RecommendRouteDto {
   @ApiProperty({
     type: () => LocationDto,
