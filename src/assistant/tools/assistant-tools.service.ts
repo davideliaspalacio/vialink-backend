@@ -105,6 +105,7 @@ export class AssistantToolsService {
     // For each candidate, check if it also passes near `to` and compute ETA
     const options: {
       route_id: string;
+      route_display: string;
       route_code: string;
       route_name: string;
       wait_seconds: number | null;
