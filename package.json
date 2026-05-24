@@ -25,7 +25,8 @@
     "db:reset": "prisma migrate reset --skip-seed && pnpm seed",
     "seed": "ts-node prisma/seeds/index.ts",
     "smoke": "curl -s http://localhost:3000/health | jq",
-    "snap-corridors": "ts-node scripts/snap-corridors-to-roads.ts"
+    "snap-corridors": "ts-node scripts/snap-corridors-to-roads.ts",
+    "refine-corridors": "ts-node scripts/refine-corridors-recursive.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",
