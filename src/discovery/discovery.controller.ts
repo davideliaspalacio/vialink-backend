@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../common/decorators/public.decorator';
-import { BusesAtPointDto } from './discovery.dto';
+import { BusesAtAddressDto, BusesAtPointDto } from './discovery.dto';
 import { DiscoveryService } from './discovery.service';
 
 @ApiTags('discovery')
@@ -21,6 +21,27 @@ export class DiscoveryController {
   async busesAtPoint(@Body() body: BusesAtPointDto) {
     return this.discovery.getBusesAtPoint(
       body.location,
+      body.radius_m ?? 100,
+      body.city ?? 'BAQ',
+    );
+  }
+
+  @Public()
+  @Post('buses-at-address')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      '🔍 Geocoding + buses-at-point en una sola llamada (ideal para el buscador del frontend)',
+    description:
+      'Toma una dirección libre tipo "Calle 84 con Cra 50", la geocodifica internamente (Mapbox + normalización colombiana), y devuelve las rutas + próximos buses en ese punto.\n\n' +
+      'Combina dos round-trips (GET /geocode → POST /buses-at-point) en uno solo.\n\n' +
+      'Respuesta: { destination: {query, formatted_address, location}, routes: [...] } — misma shape que /buses-at-point pero con metadata de la dirección resuelta.',
+  })
+  @ApiBody({ type: BusesAtAddressDto })
+  async busesAtAddress(@Body() body: BusesAtAddressDto) {
+    return this.discovery.getBusesAtAddress(
+      body.address,
+      body.user_location,
       body.radius_m ?? 100,
       body.city ?? 'BAQ',
     );

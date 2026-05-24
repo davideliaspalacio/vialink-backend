@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { RouteMode } from '@prisma/client';
 import { CitiesService } from '../cities/cities.service';
 import type { LatLng } from '../common/types/geo';
+import { GeocodingService } from '../geocoding/geocoding.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 interface BusesAtPointRow {
@@ -54,7 +55,42 @@ export class DiscoveryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cities: CitiesService,
+    private readonly geocoding: GeocodingService,
   ) {}
+
+  /**
+   * Resolves a free-text address, then returns the same shape as
+   * getBusesAtPoint() but enriched with the resolved destination.
+   *
+   * Front-end use case:
+   *   User types "Calle 84 con Cra 50" in the search bar and selects it
+   *   → frontend calls POST /buses-at-address with that string
+   *   → backend geocodes + queries buses-at-point + returns combined result
+   *
+   * Saves one round-trip vs the two-step (GET /geocode → POST /buses-at-point).
+   */
+  async getBusesAtAddress(
+    address: string,
+    userLocation: LatLng | undefined,
+    radius_m: number,
+    cityCode: string,
+  ) {
+    const geocoded = await this.geocoding.geocodeToPoint(address, userLocation);
+    const buses = await this.getBusesAtPoint(
+      geocoded.location,
+      radius_m,
+      cityCode,
+    );
+
+    return {
+      destination: {
+        query: address,
+        formatted_address: geocoded.formatted_address,
+        location: geocoded.location,
+      },
+      routes: buses.routes,
+    };
+  }
 
   async getBusesAtPoint(
     location: LatLng,
