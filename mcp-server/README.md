@@ -171,23 +171,76 @@ Una vez conectado a Claude Desktop:
 
 Build local + path absoluto en config. Cero costo, cero deploy.
 
-### Opción B: HTTP+SSE en Cloudflare Workers / Railway
+### Opción B: HTTP en Railway (production-ready)
 
-**TODO**: implementar transport HTTP+SSE. El skeleton está en `server.ts`
-detrás del flag `--http`.
+El server soporta Streamable HTTP transport (MCP spec 2024-11-05+).
+Modo stateless: cada request crea su propia instancia, escala horizontal
+sin pegamento.
 
-Una vez implementado:
+**Setup en Railway:**
 
-```bash
-# Cloudflare Workers
-wrangler deploy
+1. En el dashboard del proyecto Vialink, click **"+ New"** → **"GitHub Repo"**
+   → seleccionar `vialink-backend` (el mismo repo del backend).
 
-# Railway
-# (usar el mismo Dockerfile que el backend, command override:
-#  "node dist/server.js --http")
+2. En el servicio nuevo, ir a **Settings**:
+
+   | Setting | Valor |
+   |---|---|
+   | **Root Directory** | `mcp-server` |
+   | **Branch** | `main` |
+   | **Build Command** | `pnpm install --frozen-lockfile && pnpm build` |
+   | **Start Command** | `node dist/server.js --http` |
+   | **Watch Paths** | `mcp-server/**` |
+   | **Healthcheck Path** | `/health` |
+
+3. **Variables** del servicio:
+
+   ```
+   VIALINK_API_URL=https://vialink-backend-production.up.railway.app
+   ```
+
+   (Railway setea `PORT` automáticamente; el código ya lo respeta)
+
+4. **Settings → Networking → Generate Domain** para tener una URL pública
+   tipo `vialink-mcp-production.up.railway.app`.
+
+5. Verificar deploy: `curl https://<tu-mcp-url>/health` debe responder
+   `{ ok: true, tools: 16, ... }`.
+
+**Endpoints expuestos:**
+
+| Method | Path | Descripción |
+|---|---|---|
+| GET | `/health` | Healthcheck (Railway lo usa para deciding healthy/unhealthy) |
+| GET | `/` | Redirect a `/health` |
+| POST | `/mcp` | Endpoint MCP principal (Streamable HTTP) |
+
+**Conectar Claude Desktop al MCP deployed:**
+
+En `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "vialink-prod": {
+      "url": "https://<tu-mcp-url>/mcp"
+    }
+  }
+}
 ```
 
-Costo estimado: $0 — un Worker free tier o serverless ligero.
+(Claude Desktop ≥ 0.10 soporta transport HTTP. Versiones más viejas solo
+soportan stdio.)
+
+**Costo estimado en Railway**: ~$2-3/mes en idle. Cada request consume
+poco CPU (es un thin wrapper sobre fetch al backend). Free tier alcanza
+si el demo es esporádico.
+
+### Opción C: Cloudflare Workers
+
+Para deploy gratis 100% se podría portar a Workers, pero requiere
+adaptar el código para usar `fetch` API en vez de Express. ~2-3h de
+trabajo. Opcional.
 
 ---
 
