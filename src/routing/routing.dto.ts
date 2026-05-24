@@ -35,14 +35,14 @@ export class RecommendRouteDto {
   @ApiPropertyOptional({
     default: 500,
     minimum: 100,
-    maximum: 2000,
+    maximum: 5000,
     description:
-      'Distancia máxima de caminata aceptable en cualquiera de los dos tramos (user→paradero o paradero→destino). 500m = ~5 cuadras en Barranquilla.',
+      'Distancia máxima de caminata aceptable en cualquiera de los dos tramos (user→paradero o paradero→destino). 500m = ~5 cuadras en Barranquilla. El cap de 5000m (~5 km) permite al frontend hacer fallback de búsqueda expandida cuando no hay rutas convenientes cerca — el user ve "vas a caminar más" en vez de bloquearse.',
   })
   @IsOptional()
   @IsInt()
   @Min(100)
-  @Max(2000)
+  @Max(5000)
   max_walking_m?: number = 500;
 
   @ApiPropertyOptional({
