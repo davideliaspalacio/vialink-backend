@@ -217,6 +217,12 @@ export class RoutingService {
     destination: LatLng;
     maxWalkingM: number;
   }): Promise<CandidateRow[]> {
+    // Una ruta es CANDIDATA si tiene paraderos servibles cerca del user
+    // Y cerca del destino. "Cerca" para el paradero es max_walking_m.
+    // "Cerca" para el corridor es 2x (algunas paraderos están a 200-600m
+    // del corridor pero igual son válidos puntos de abordaje).
+    const corridorRadius = Math.round(params.maxWalkingM * 2);
+
     return this.prisma.$queryRawUnsafe<CandidateRow[]>(
       `
       WITH
@@ -226,58 +232,74 @@ export class RoutingService {
       dest_pt AS (
         SELECT ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography AS g
       ),
-      board_landmarks AS (
-        -- Top 10 paraderos más cercanos al user (dentro de max_walking)
-        SELECT l.id, l.name,
-          ST_Y(l.location::geometry) AS lat,
-          ST_X(l.location::geometry) AS lng,
-          ST_Distance(l.location, user_pt.g) AS dist_m
-        FROM landmarks l, user_pt
-        WHERE ST_DWithin(l.location, user_pt.g, $5)
-        ORDER BY dist_m
-        LIMIT 10
+      -- Rutas que pasan por el área general (corridor a ≤2× walking),
+      -- O que tienen al menos un paradero registrado cerca del user.
+      -- Damos preferencia a las que también pasan cerca del destino.
+      nearby_routes AS (
+        SELECT DISTINCT r.id AS route_id, r.code, r.name, r.color, rc.length_m
+        FROM routes r
+        JOIN route_corridors rc ON rc.route_id = r.id
+        CROSS JOIN user_pt
+        CROSS JOIN dest_pt
+        WHERE r.active = true
+          AND ST_DWithin(rc.path, user_pt.g, ${corridorRadius})
+          AND ST_DWithin(rc.path, dest_pt.g, ${corridorRadius})
       )
       SELECT
-        bl.id AS board_landmark_id,
-        bl.name AS board_landmark_name,
-        bl.lat AS board_lat,
-        bl.lng AS board_lng,
-        bl.dist_m AS walk_to_board_m,
-        r.id AS route_id,
-        r.code AS route_code,
-        r.name AS route_name,
-        r.color AS route_color,
-        rc.length_m,
-        rl.fraction_of_corridor AS board_fraction,
-        alight.id AS alight_landmark_id,
+        board.landmark_id AS board_landmark_id,
+        board.name AS board_landmark_name,
+        board.lat AS board_lat,
+        board.lng AS board_lng,
+        board.walk_m AS walk_to_board_m,
+        nr.route_id,
+        nr.code AS route_code,
+        nr.name AS route_name,
+        nr.color AS route_color,
+        nr.length_m,
+        board.fraction AS board_fraction,
+        alight.landmark_id AS alight_landmark_id,
         alight.name AS alight_landmark_name,
         alight.lat AS alight_lat,
         alight.lng AS alight_lng,
-        alight.dist_m AS walk_from_alight_m,
+        alight.walk_m AS walk_from_alight_m,
         alight.fraction AS alight_fraction
-      FROM board_landmarks bl
-      JOIN route_landmarks rl ON rl.landmark_id = bl.id
-      JOIN routes r ON r.id = rl.route_id AND r.active = true
-      JOIN route_corridors rc ON rc.route_id = r.id
+      FROM nearby_routes nr
+      CROSS JOIN user_pt
       CROSS JOIN dest_pt
       JOIN LATERAL (
-        -- Mejor paradero de descenso sobre la MISMA ruta, cerca del destino.
-        -- Restricción: fraction > board_fraction (bus va de board hacia alight).
-        SELECT l2.id, l2.name,
+        -- Mejor paradero de abordaje: cualquier paradero registrado en
+        -- esta ruta dentro del walking radius del user.
+        SELECT
+          rl.landmark_id, l.name,
+          ST_Y(l.location::geometry) AS lat,
+          ST_X(l.location::geometry) AS lng,
+          ST_Distance(l.location, user_pt.g) AS walk_m,
+          rl.fraction_of_corridor AS fraction
+        FROM route_landmarks rl
+        JOIN landmarks l ON l.id = rl.landmark_id
+        WHERE rl.route_id = nr.route_id
+          AND ST_DWithin(l.location, user_pt.g, $5)
+        ORDER BY ST_Distance(l.location, user_pt.g)
+        LIMIT 1
+      ) board ON true
+      JOIN LATERAL (
+        -- Mejor paradero de descenso: dentro del walking radius del dest,
+        -- y DESPUÉS del board en el corridor (para que el bus llegue allá).
+        SELECT
+          rl2.landmark_id, l2.name,
           ST_Y(l2.location::geometry) AS lat,
           ST_X(l2.location::geometry) AS lng,
-          ST_Distance(l2.location, dest_pt.g) AS dist_m,
+          ST_Distance(l2.location, dest_pt.g) AS walk_m,
           rl2.fraction_of_corridor AS fraction
         FROM route_landmarks rl2
         JOIN landmarks l2 ON l2.id = rl2.landmark_id
-        WHERE rl2.route_id = r.id
-          AND rl2.fraction_of_corridor > rl.fraction_of_corridor
+        WHERE rl2.route_id = nr.route_id
+          AND rl2.fraction_of_corridor > board.fraction
           AND ST_DWithin(l2.location, dest_pt.g, $5)
         ORDER BY ST_Distance(l2.location, dest_pt.g)
         LIMIT 1
       ) alight ON true
-      WHERE rl.distance_to_corridor_m < 50  -- el paradero realmente está sobre la ruta
-      ORDER BY bl.dist_m, alight.dist_m;
+      ORDER BY (board.walk_m + alight.walk_m);
       `,
       params.userLocation.lng,
       params.userLocation.lat,
