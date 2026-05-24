@@ -230,7 +230,9 @@ async function main() {
     const { id: routeId, lengthM } = await seedRoute(route, cityId);
     const rlCount = await seedRouteLandmarks(routeId, cityId);
     const fsCount = await seedFixedStops(route, routeId);
-    const busCount = route.mode === 'BRT' ? 8 : 5;
+    // Densidad reducida para demo (75% menos vs 8/5).
+    // BRT (Transmetro) sigue con más buses porque son rutas troncales largas.
+    const busCount = route.mode === 'BRT' ? 2 : 1;
     const buses = await seedBuses(route, routeId, busCount);
 
     totalRoutes++;
